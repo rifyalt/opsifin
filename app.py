@@ -32,6 +32,11 @@ except ImportError:
 # Konfigurasi
 # ---------------------------------------------------------------------------
 st.set_page_config(page_title="Merge Excel & Dashboard", page_icon="📊", layout="wide")
+# Angka KPI tidak dipotong ("…") di layar sempit: font menyesuaikan lebar & boleh turun baris
+st.markdown("""<style>
+[data-testid="stMetricValue"] {font-size: clamp(1.3rem, 2.4vw, 2.25rem);}
+[data-testid="stMetricValue"] > div {white-space: normal; overflow: visible; text-overflow: clip;}
+</style>""", unsafe_allow_html=True)
 
 EXCEL_EXT = (".xlsx", ".xlsm", ".xls")
 
@@ -207,6 +212,13 @@ def rupiah(x: float) -> str:
     if a >= 1e6:
         return f"Rp {x/1e6:,.2f} Jt"
     return f"Rp {x:,.0f}"
+
+
+def rupiah_full(x: float) -> str:
+    """Format rupiah lengkap tanpa disingkat, pemisah ribuan titik: Rp 492.105.123.456"""
+    if pd.isna(x):
+        return "-"
+    return "Rp " + f"{x:,.0f}".replace(",", ".")
 
 
 def angka(x: float) -> str:
@@ -578,8 +590,8 @@ with tab_dash:
     n_inv = fdata["Invoice No"].nunique() if "Invoice No" in fdata else len(fdata)
     rn = col_sum(fdata, "Room Night")
     k = st.columns(3) + st.columns(3)
-    k[0].metric("Total Sales AR", rupiah(sales))
-    k[1].metric("Total Profit", rupiah(profit))
+    k[0].metric("Total Sales AR", rupiah_full(sales))
+    k[1].metric("Total Profit", rupiah_full(profit))
     k[2].metric("Margin", f"{(profit / sales * 100 if sales else 0):.2f}%")
     k[3].metric("Jumlah Invoice", angka(n_inv))
     k[4].metric("Room Night", angka(rn))
@@ -731,7 +743,7 @@ with tab_top:
                                     "Room Night", "Invoice No"]])
         sub1, sub2 = st.tabs(["💰 Top Spender Hotel (Sales AR)", "🛏️ Top Room Night"])
         with sub1:
-            ranking_section(rank, "Sales AR", "Share Sales %", "#2E86AB", rupiah, "spender")
+            ranking_section(rank, "Sales AR", "Share Sales %", "#2E86AB", rupiah_full, "spender")
         with sub2:
             ranking_section(rank, "Room Night", "Share RN %", "#3B8B5A", angka, "roomnight")
 
