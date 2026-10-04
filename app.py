@@ -13,6 +13,7 @@ Cara menjalankan:
 import html
 import io
 import re
+from difflib import SequenceMatcher
 import time
 from pathlib import Path
 
@@ -21,7 +22,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from hotel_grouping import DEFAULT_STOPWORDS, build_hotel_groups
+try:  # rapidfuzz jauh lebih cepat; jika belum terpasang, pakai difflib bawaan Python
+    from rapidfuzz import fuzz, process
+    HAS_RAPIDFUZZ = True
+except ImportError:
+    HAS_RAPIDFUZZ = False
 
 # ---------------------------------------------------------------------------
 # Konfigurasi
@@ -39,6 +44,152 @@ NUMERIC_COLS = ["Room", "Night", "Base Fare", "Fare Tax", "IWJR", "Add Charge",
                 "Extra Disc", "Profit", "Profit %", "Rounding", "Base Sell"]
 
 BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
+
+# ---------------------------------------------------------------------------
+# Pengelompokan nama hotel yang mirip (fuzzy matching)
+#   1. Normalisasi nama: huruf kecil, hapus isi kurung, '&' -> 'and', hapus tanda
+#      baca, kata umum (hotel, by IHG, managed by ...) dan nama kota hotel.
+#   2. Nama yang identik setelah normalisasi langsung digabung.
+#   3. Sisanya dibandingkan dengan skor kemiripan di dalam kota yang sama;
+#      skor >= ambang digabung (union-find), dengan pengaman: kata pertama/merek
+#      harus mirip dan angka dalam nama harus sama.
+#   4. Nama grup = varian dengan transaksi terbanyak.
+# ---------------------------------------------------------------------------
+DEFAULT_STOPWORDS = [
+    "hotel", "hotels", "the", "and", "by ihg", "an ihg hotel", "indonesia",
+    "managed by .*", "formerly .*", "syariah",
+]
+
+
+def norm_city(x) -> str:
+    s = re.sub(r"\s+", " ", str(x)).strip().lower()
+    s = re.sub(r"\b(regency|city|kota|kabupaten|kab)\b", "", s).strip()
+    return s if s and s not in ("-", "nan", "none") else "(tanpa kota)"
+
+
+def normalize_name(name: str, city: str, stop_patterns: list) -> str:
+    s = html.unescape(str(name)).lower()
+    s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)          # isi dalam kurung
+    s = s.replace("&", " and ").replace("'", "").replace("’", "")
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)               # tanda baca -> spasi
+    s = f" {re.sub(r' +', ' ', s).strip()} "
+    for pat in stop_patterns:
+        s = re.sub(rf" {pat}(?= )", " ", s)
+    if city and city != "(tanpa kota)":
+        s = s.replace(f" {city} ", " ")
+    s = re.sub(r" +", " ", s).strip()
+    return s or str(name).lower().strip()
+
+
+def _ratio(a: str, b: str) -> float:
+    if HAS_RAPIDFUZZ:
+        return fuzz.ratio(a, b)
+    return SequenceMatcher(None, a, b).ratio() * 100
+
+
+def _score(a: str, b: str, **_) -> float:
+    """Skor kemiripan: maksimum dari perbandingan biasa, urutan kata diabaikan,
+    dan perbandingan tanpa spasi (untuk 'de grand city' vs 'degrandcity')."""
+    sort_a, sort_b = " ".join(sorted(a.split())), " ".join(sorted(b.split()))
+    return max(_ratio(a, b), _ratio(sort_a, sort_b),
+               _ratio(a.replace(" ", ""), b.replace(" ", "")))
+
+
+def _guard(a: str, b: str) -> bool:
+    """Pengaman agar hotel berbeda tidak ikut tergabung:
+    - kata pertama (biasanya merek) harus mirip, atau awalan tanpa spasi sama
+      (contoh ditolak: 'Meru Resort Sanur' vs 'Mercure Resort Sanur')
+    - angka di nama harus sama (contoh ditolak: 'Panglima Polim' vs 'Panglima Polim 2')"""
+    ta, tb = a.split(), b.split()
+    if not ta or not tb:
+        return False
+    if re.findall(r"\d+", a) != re.findall(r"\d+", b):
+        return False
+    na, nb = a.replace(" ", ""), b.replace(" ", "")
+    return _ratio(ta[0], tb[0]) >= 80 or (len(na) >= 5 and na[:5] == nb[:5])
+
+
+class _UF:
+    def __init__(self, n):
+        self.p = list(range(n))
+
+    def find(self, i):
+        while self.p[i] != i:
+            self.p[i] = self.p[self.p[i]]
+            i = self.p[i]
+        return i
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.p[rb] = ra
+
+
+def build_hotel_groups(hotels: pd.DataFrame, threshold: int = 90,
+                       same_city: bool = True, stopwords=None) -> pd.DataFrame:
+    """
+    hotels: DataFrame berkolom ['Hotel Name', 'Hotel City', 'Transaksi'] (unik per nama+kota)
+    Return: mapping dengan kolom
+        Hotel City, Hotel Name, Kota (norm), Nama Normal, Hotel (Grup), Skor, Transaksi, Jumlah Varian
+    """
+    stop_patterns = [re.escape(w).replace(r"\.\*", ".*").replace(r"\ ", " ")
+                     for w in (stopwords if stopwords is not None else DEFAULT_STOPWORDS)
+                     if str(w).strip()]
+    df = hotels.copy().reset_index(drop=True)
+    df["Kota (norm)"] = df["Hotel City"].map(norm_city)
+    df["Nama Normal"] = [normalize_name(n, c, stop_patterns)
+                         for n, c in zip(df["Hotel Name"], df["Kota (norm)"])]
+
+    uf = _UF(len(df))
+    best = [100.0] * len(df)
+    if same_city:
+        blocks = df.groupby("Kota (norm)").groups
+    else:  # lintas kota: kelompokkan berdasarkan kata pertama agar tetap cepat
+        blocks = df.groupby(df["Nama Normal"].str.split().str[0].fillna("")).groups
+
+    for _, idx in blocks.items():
+        idx = list(idx)
+        if len(idx) < 2:
+            continue
+        names = df.loc[idx, "Nama Normal"].tolist()
+        # 1) identik setelah normalisasi
+        first = {}
+        for i, n in zip(idx, names):
+            if n in first:
+                uf.union(first[n], i)
+            else:
+                first[n] = i
+        # 2) fuzzy antar nama normal yang unik
+        uniq = list(first.keys())
+        if len(uniq) < 2:
+            continue
+        if HAS_RAPIDFUZZ:
+            mat = process.cdist(uniq, uniq, scorer=_score, score_cutoff=threshold, workers=-1)
+        else:  # fallback lebih lambat tanpa rapidfuzz
+            mat = [[_score(x, y) if j > i else 0 for j, y in enumerate(uniq)]
+                   for i, x in enumerate(uniq)]
+            import numpy as np
+            mat = np.array(mat)
+        for a in range(len(uniq)):
+            for b in range(a + 1, len(uniq)):
+                if mat[a, b] >= threshold and _guard(uniq[a], uniq[b]):
+                    ia, ib = first[uniq[a]], first[uniq[b]]
+                    uf.union(ia, ib)
+                    best[ia] = min(best[ia], mat[a, b])
+                    best[ib] = min(best[ib], mat[a, b])
+
+    df["_root"] = [uf.find(i) for i in range(len(df))]
+    # Nama grup = varian dengan transaksi terbanyak
+    canon = (df.sort_values("Transaksi", ascending=False)
+             .drop_duplicates("_root").set_index("_root")["Hotel Name"])
+    df["Hotel (Grup)"] = df["_root"].map(canon)
+    df["Jumlah Varian"] = df.groupby("_root")["Hotel Name"].transform("size")
+    df["Skor"] = [round(s, 1) if v > 1 else None for s, v in zip(best, df["Jumlah Varian"])]
+    return (df.drop(columns="_root")
+            .sort_values(["Kota (norm)", "Hotel (Grup)", "Transaksi"],
+                         ascending=[True, True, False])
+            .reset_index(drop=True))
 
 
 # ---------------------------------------------------------------------------
