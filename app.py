@@ -615,26 +615,54 @@ with tab_dash:
                           legend=dict(orientation="h", y=1.1), margin=dict(t=70, b=30))
         st.plotly_chart(fig, width="stretch")
 
-    def top_bar(col, title, color):
-        if col not in fdata.columns:
+    def top_bar(col, title, color, metric="Sales AR"):
+        if col not in fdata.columns or metric not in fdata.columns:
             return None
-        t = (fdata[fdata[col].astype(str).str.strip().ne("-")]
-             .groupby(col)["Sales AR"].sum().nlargest(top_n).sort_values().reset_index())
-        f = px.bar(t, x="Sales AR", y=col, orientation="h", title=title,
-                   color_discrete_sequence=[color], height=max(350, 28 * len(t) + 100))
-        f.update_layout(yaxis_title=None, margin=dict(t=50, b=20))
+        d = fdata[fdata[col].astype(str).str.strip().ne("-")]
+        key = d[col].astype(str).str.strip()
+        if col == "Hotel City":  # satukan 'JAKARTA' / 'Jakarta'
+            key = key.str.title()
+        agg = d.groupby(key).agg(**{"Sales AR": ("Sales AR", "sum"),
+                                     "Room Night": ("Room Night", "sum")})
+        agg.index.name = col
+        t = agg.nlargest(top_n, metric).sort_values(metric).reset_index()
+        t["Sales / Room Night"] = t["Sales AR"] / t["Room Night"].where(t["Room Night"] > 0)
+        f = px.bar(t, x=metric, y=col, orientation="h", title=title,
+                   color_discrete_sequence=[color], height=max(350, 28 * len(t) + 100),
+                   text_auto=",.0f" if metric == "Room Night" else False,
+                   hover_data={"Sales AR": ":,.0f", "Room Night": ":,.0f",
+                               "Sales / Room Night": ":,.0f"})
+        f.update_traces(textposition="outside", cliponaxis=False)
+        f.update_layout(yaxis_title=None, margin=dict(t=50, b=20, r=40))
         return f
 
-    c1, c2 = st.columns(2)
-    for col_box, (col, title, color) in zip(
-        [c1, c2, c1, c2],
-        [("Customer Name", f"Top {top_n} Customer (Sales AR)", "#2E86AB"),
-         ("Hotel (Grup)", f"Top {top_n} Hotel (Sales AR)", "#A23B72"),
-         ("Hotel City", f"Top {top_n} Kota (Sales AR)", "#3B8B5A"),
-         ("Supplier Name", f"Top {top_n} Supplier (Sales AR)", "#C73E1D")]):
-        fig = top_bar(col, title, color)
-        if fig is not None:
-            col_box.plotly_chart(fig, width="stretch")
+    def four_charts(metric, label, colors, key):
+        c1, c2 = st.columns(2)
+        for col_box, (col, name, color) in zip(
+            [c1, c2, c1, c2],
+            [("Customer Name", "Customer", colors[0]), ("Hotel (Grup)", "Hotel", colors[1]),
+             ("Hotel City", "Kota", colors[2]), ("Supplier Name", "Supplier", colors[3])]):
+            fig = top_bar(col, f"Top {top_n} {name} ({label})", color, metric)
+            if fig is not None:
+                col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}")
+
+    st.markdown("#### 💰 Analisa Sales AR")
+    four_charts("Sales AR", "Sales AR", ["#2E86AB", "#A23B72", "#3B8B5A", "#C73E1D"], "sales")
+
+    # ---------------- Analisa Room Night (Room × Night) ----------------
+    if "Room Night" in fdata.columns:
+        st.divider()
+        st.markdown("#### 🛏️ Analisa Room Night (Room × Night)")
+        tot_rn = fdata["Room Night"].sum()
+        tot_room = fdata["Room"].sum() if "Room" in fdata.columns else 0
+        r = st.columns(3)
+        r[0].metric("Total Room Night", angka(tot_rn))
+        r[1].metric("Rata-rata Sales per Room Night",
+                    rupiah_full(sales / tot_rn) if tot_rn else "-")
+        r[2].metric("Rata-rata lama menginap", f"{tot_rn / tot_room:.2f} malam" if tot_room else "-",
+                    help="Total Room Night ÷ total Room")
+        four_charts("Room Night", "Room Night", ["#1B6F8A", "#7B2D5B", "#2A6B45", "#9C2F15"], "rn")
+        st.divider()
 
     c3, c4 = st.columns(2)
     if "Branch" in fdata.columns:
