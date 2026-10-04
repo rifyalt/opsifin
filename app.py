@@ -221,6 +221,13 @@ def rupiah_full(x: float) -> str:
     return "Rp " + f"{x:,.0f}".replace(",", ".")
 
 
+def invoice_key(sr: pd.Series) -> pd.Series:
+    """Nomor invoice yang dinormalisasi (tanpa spasi, huruf besar); kosong/'-' diabaikan.
+    Dipakai untuk menghitung invoice UNIK, karena satu invoice bisa terdiri dari beberapa baris."""
+    k = sr.astype(str).str.strip().str.upper()
+    return k.where(~k.isin(["", "-", "NAN", "NONE"]))
+
+
 def angka(x: float) -> str:
     return f"{x:,.0f}".replace(",", ".")
 
@@ -587,13 +594,16 @@ def col_sum(df, c):
 with tab_dash:
     sales = col_sum(fdata, "Sales AR")
     profit = col_sum(fdata, "Profit")
-    n_inv = fdata["Invoice No"].nunique() if "Invoice No" in fdata else len(fdata)
+    n_inv = invoice_key(fdata["Invoice No"]).nunique() if "Invoice No" in fdata else len(fdata)
     rn = col_sum(fdata, "Room Night")
     k = st.columns(3) + st.columns(3)
     k[0].metric("Total Sales AR", rupiah_full(sales))
     k[1].metric("Total Profit", rupiah_full(profit))
     k[2].metric("Margin", f"{(profit / sales * 100 if sales else 0):.2f}%")
-    k[3].metric("Jumlah Invoice", angka(n_inv))
+    k[3].metric("Jumlah Invoice (unik)", angka(n_inv),
+                help=f"Dihitung dari nomor invoice unik. {angka(len(fdata))} baris transaksi "
+                     f"berasal dari {angka(n_inv)} invoice, karena satu invoice bisa berisi "
+                     f"beberapa baris (beberapa kamar, penyesuaian, dll.).")
     k[4].metric("Room Night", angka(rn))
     if "Hotel (Grup)" in fdata.columns:
         k[5].metric("Jumlah Hotel", angka(fdata["Hotel (Grup)"].nunique()))
@@ -679,9 +689,10 @@ def hotel_ranking(df: pd.DataFrame) -> pd.DataFrame:
     """Ringkasan per hotel (grup): Sales AR, Profit, Room Night, invoice, ADR, kota utama."""
     hcol = "Hotel (Grup)"
     d = df[df[hcol].notna() & df[hcol].astype(str).str.strip().ne("-")]
+    d = d.assign(**{"Invoice No": invoice_key(d["Invoice No"])})
     agg = d.groupby(hcol).agg(
         **{"Sales AR": ("Sales AR", "sum"), "Profit": ("Profit", "sum"),
-           "Room Night": ("Room Night", "sum"), "Invoice": ("Invoice No", "nunique")})
+           "Room Night": ("Room Night", "sum"), "Invoice (unik)": ("Invoice No", "nunique")})
     # Kota utama = kota dengan transaksi terbanyak untuk hotel tsb
     city = (d.groupby([hcol, "Hotel City"]).size().reset_index(name="n")
             .sort_values("n").drop_duplicates(hcol, keep="last").set_index(hcol)["Hotel City"])
@@ -742,7 +753,7 @@ def ranking_section(rank: pd.DataFrame, metric: str, share_col: str, color: str,
     st.markdown(f"**Peringkat lengkap ({angka(len(r))} hotel)**")
     st.dataframe(
         r[["Rank", "Hotel", "Kota", metric, share_col] +
-          [x for x in ["Sales AR", "Room Night", "Invoice", "Rata-rata / Room Night",
+          [x for x in ["Sales AR", "Room Night", "Invoice (unik)", "Rata-rata / Room Night",
                        "Profit", "Margin %"] if x != metric]],
         hide_index=True, width="stretch", height=420,
         column_config={
@@ -893,8 +904,10 @@ with tab_hotel:
 
 with tab_file:
     st.subheader("Ringkasan per file")
-    per_file = (data.groupby("Source File")
-                .agg(Baris=("Source File", "size"),
+    per_file = (data.assign(_inv=invoice_key(data["Invoice No"]) if "Invoice No" in data
+                            else data.index)
+                .groupby("Source File")
+                .agg(Baris=("Source File", "size"), **{"Invoice Unik": ("_inv", "nunique")},
                      Sales_AR=("Sales AR", "sum"), Profit=("Profit", "sum"))
                 .reset_index())
     st.dataframe(summary.merge(per_file, left_on="File", right_on="Source File", how="left")
