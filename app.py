@@ -521,9 +521,41 @@ top_n = st.sidebar.slider("Top N pada grafik", 5, 30, 10)
 # Filter utama di area dashboard: Supplier Name & Hotel
 st.markdown("##### 🔎 Filter Dashboard")
 fc1, fc2 = st.columns(2)
-fdata = multi_filter(fdata, "Supplier Name", "Supplier Name", fc1, "Semua supplier")
-fdata = multi_filter(fdata, "Hotel (Grup)", "Hotel (sudah digabung)" if hotel_on else "Hotel",
-                     fc2, "Semua hotel")
+
+
+def include_exclude_filter(df: pd.DataFrame, col: str, label: str, box, key: str) -> pd.DataFrame:
+    """Filter dengan mode Include (hanya yang dipilih) atau Exclude (kecualikan yang dipilih),
+    ditambah pengecualian berdasarkan kata kunci (mis. 'channel manage')."""
+    if col not in df.columns:
+        return df
+    mode = box.radio(f"Mode filter {label}", ["Include", "Exclude"], horizontal=True,
+                     key=f"mode_{key}",
+                     help="Include: tampilkan HANYA yang dipilih. "
+                          "Exclude: tampilkan semua KECUALI yang dipilih.")
+    opts = sorted(data[col].dropna().astype(str).unique())
+    sel = box.multiselect(label, opts, key=f"sel_{key}",
+                          placeholder="Semua" if mode == "Include" else "Tidak ada yang dikecualikan")
+    kw = box.text_input(f"Kecualikan {label} yang mengandung kata (pisahkan dengan koma)",
+                        key=f"kw_{key}", placeholder="mis. channel manage, expedia")
+
+    vals = df[col].astype(str)
+    if sel:
+        df = df[vals.isin(sel)] if mode == "Include" else df[~vals.isin(sel)]
+        vals = df[col].astype(str)
+    words = [w.strip().lower() for w in kw.split(",") if w.strip()]
+    if words:
+        pattern = "|".join(re.escape(w) for w in words)
+        hit = vals.str.lower().str.contains(pattern, regex=True, na=False)
+        excluded = sorted(vals[hit].unique())
+        df = df[~hit]
+        box.caption(f"Dikecualikan ({len(excluded)}): " + (", ".join(excluded[:8]) or "-")
+                    + (" …" if len(excluded) > 8 else ""))
+    return df
+
+
+fdata = include_exclude_filter(fdata, "Supplier Name", "Supplier Name", fc1, "supplier")
+fdata = include_exclude_filter(fdata, "Hotel (Grup)",
+                               "Hotel (sudah digabung)" if hotel_on else "Hotel", fc2, "hotel")
 
 if fdata.empty:
     st.warning("Tidak ada data yang cocok dengan filter.")
