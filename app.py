@@ -504,6 +504,55 @@ elif has_hotel:
     data = data.assign(**{"Hotel (Grup)": data["Hotel Name"]})
 
 # ---------------------------------------------------------------------------
+# SIDEBAR: merge nama customer
+# ---------------------------------------------------------------------------
+DEFAULT_CUSTOMER_RULES = [
+    {"Nama Customer Asli": "CBT PERTAMINA (HOTEL)", "Digabung Menjadi": "CBT PERTAMINA"},
+]
+
+
+def customer_norm(sr: pd.Series) -> pd.Series:
+    """Normalisasi untuk pencocokan: huruf besar, spasi rapi, tanpa spasi sebelum '('.
+    Jadi 'CBT PERTAMINA (HOTEL)', 'CBT PERTAMINA(HOTEL)' dan 'cbt pertamina (hotel)' sama."""
+    s_ = sr.astype(str).str.upper().str.replace(r"\s+", " ", regex=True).str.strip()
+    return s_.str.replace(r"\s*\(\s*", "(", regex=True).str.replace(r"\s*\)", ")", regex=True)
+
+
+cx = st.expander("👤 Aturan Merge Customer (gabungkan beberapa nama customer menjadi satu)")
+if "Customer Name" in data.columns:
+    cust_on = cx.toggle("Gabungkan nama customer", value=True,
+                                help="Nilai customer di kolom kiri dijumlahkan ke customer di "
+                                     "kolom kanan, dan yang ditampilkan hanya nama di kolom kanan.")
+    if "customer_rules" not in st.session_state:
+        st.session_state["customer_rules"] = pd.DataFrame(DEFAULT_CUSTOMER_RULES)
+    cust_opts = sorted(data["Customer Name"].dropna().astype(str).unique())
+    rules = cx.data_editor(
+        st.session_state["customer_rules"], num_rows="dynamic", hide_index=True,
+        width="stretch", key="customer_rules_editor", disabled=not cust_on,
+        column_config={
+            "Nama Customer Asli": st.column_config.SelectboxColumn(
+                "Nama customer asli", options=cust_opts, required=True, width="large"),
+            "Digabung Menjadi": st.column_config.TextColumn("Digabung menjadi (nama yang ditampilkan)",
+                                                             required=True, width="large"),
+        })
+    cx.caption("Tambah baris (+) untuk aturan baru, mis. "
+                       "'CBT PERTAMINA(HOTEL CM)' → 'CBT PERTAMINA'.")
+
+    if cust_on:
+        r_ = rules.dropna(subset=["Nama Customer Asli", "Digabung Menjadi"])
+        r_ = r_[r_["Digabung Menjadi"].astype(str).str.strip().ne("")]
+        rule_map = dict(zip(customer_norm(r_["Nama Customer Asli"]),
+                            r_["Digabung Menjadi"].astype(str).str.strip()))
+        if rule_map:
+            orig = data["Customer Name"]
+            mapped = customer_norm(orig).map(rule_map)
+            n_rows = int(mapped.notna().sum())
+            data = data.assign(**{"Customer Name": mapped.fillna(orig),
+                                  "Customer Name (Asli)": orig})
+            cx.caption(f"{angka(n_rows)} baris digabung ke {len(set(rule_map.values()))} "
+                               f"customer.")
+
+# ---------------------------------------------------------------------------
 # SIDEBAR: filter
 # ---------------------------------------------------------------------------
 st.sidebar.divider()
