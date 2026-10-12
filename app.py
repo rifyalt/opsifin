@@ -344,8 +344,7 @@ def merge_frames(frames: list, drop_dup: bool) -> pd.DataFrame:
 def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter",
-                        engine_kwargs={"options": {"constant_memory": True,
-                                                   "strings_to_urls": False}}) as w:
+                        engine_kwargs={"options": {"strings_to_urls": False}}) as w:
         df.to_excel(w, sheet_name="Merged Data", index=False)
         summary.to_excel(w, sheet_name="Ringkasan File", index=False)
     return buf.getvalue()
