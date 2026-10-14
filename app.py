@@ -420,16 +420,95 @@ def merge_frames(frames: list, drop_dup: bool) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Ekspor
 # ---------------------------------------------------------------------------
-def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame, extra: dict = None) -> bytes:
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+EXCEL_MAX_ROWS = 1_048_575
+# Streamlit versi baru menerima fungsi sebagai 'data': file baru dibuat saat tombol diklik
+LAZY_DL = "callable" in (st.download_button.__doc__ or "")
+
+
+def excel_book(sheets: dict, scorecard: list = None) -> bytes:
+    """Buat workbook Excel yang rapi: header tebal, freeze baris pertama, autofilter,
+    lebar kolom otomatis, format ribuan untuk angka & format tanggal.
+    sheets    : {nama_sheet: DataFrame}
+    scorecard : list (label, nilai, format) -> ditulis sebagai sheet 'Scorecard' paling depan;
+                format: 'rp', 'num', 'text' atau None untuk baris judul bagian."""
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter",
+    with pd.ExcelWriter(buf, engine="xlsxwriter", datetime_format="dd-mmm-yyyy",
+                        date_format="dd-mmm-yyyy",
                         engine_kwargs={"options": {"strings_to_urls": False}}) as w:
-        df.to_excel(w, sheet_name="Merged Data", index=False)
-        summary.to_excel(w, sheet_name="Ringkasan File", index=False)
-        for name, sheet in (extra or {}).items():
-            if sheet is not None and len(sheet):
-                sheet.to_excel(w, sheet_name=name[:31], index=False)
+        wb = w.book
+        f_head = wb.add_format({"bold": True, "bg_color": "#1F4E78", "font_color": "#FFFFFF",
+                                "border": 1, "text_wrap": True, "valign": "vcenter"})
+        f_num = wb.add_format({"num_format": "#,##0"})
+        f_pct = wb.add_format({"num_format": "0.00"})
+
+        if scorecard:
+            ws = wb.add_worksheet("Scorecard")
+            f_title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#1F4E78"})
+            f_sec = wb.add_format({"bold": True, "bg_color": "#DDEBF7", "border": 1})
+            f_lbl = wb.add_format({"border": 1})
+            f_rp = wb.add_format({"num_format": '"Rp "#,##0', "border": 1, "bold": True})
+            f_n = wb.add_format({"num_format": "#,##0", "border": 1, "bold": True})
+            f_txt = wb.add_format({"border": 1, "text_wrap": True})
+            ws.set_column(0, 0, 30)
+            ws.set_column(1, 1, 70)
+            r = 0
+            for label, value, fmt in scorecard:
+                if fmt == "title":
+                    ws.write(r, 0, label, f_title)
+                    r += 2
+                    continue
+                if fmt is None:          # judul bagian
+                    if r:
+                        r += 1
+                    ws.merge_range(r, 0, r, 1, label, f_sec)
+                else:
+                    ws.write(r, 0, label, f_lbl)
+                    if fmt == "rp":
+                        ws.write_number(r, 1, float(value or 0), f_rp)
+                    elif fmt == "num":
+                        ws.write_number(r, 1, float(value or 0), f_n)
+                    else:
+                        ws.write(r, 1, "-" if value is None else str(value), f_txt)
+                r += 1
+
+        for name, df in sheets.items():
+            if df is None or not len(df.columns):
+                continue
+            sh = name[:31]
+            df = df.head(EXCEL_MAX_ROWS)
+            df.to_excel(w, sheet_name=sh, index=False)
+            ws = w.sheets[sh]
+            for j, col in enumerate(df.columns):
+                ws.write(0, j, str(col), f_head)
+                s = df[col]
+                sample = s.head(300).astype(str)
+                width = min(max(len(str(col)), sample.str.len().max() if len(sample) else 0) + 2, 50)
+                fmt = None
+                if pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s):
+                    fmt = f_pct if "%" in str(col) else (None if "Rating" in str(col) else f_num)
+                    width = max(width, 14)
+                elif pd.api.types.is_datetime64_any_dtype(s):
+                    width = max(len(str(col)) + 2, 13)
+                ws.set_column(j, j, width, fmt)
+            ws.freeze_panes(1, 0)
+            if len(df):
+                ws.autofilter(0, 0, len(df), len(df.columns) - 1)
     return buf.getvalue()
+
+
+def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame, extra: dict = None) -> bytes:
+    sheets = {"Merged Data": df, "Ringkasan File": summary}
+    sheets.update({k: v for k, v in (extra or {}).items() if v is not None and len(v)})
+    return excel_book(sheets)
+
+
+def excel_download(box, label: str, make, file_name: str, key: str):
+    """Tombol unduh Excel. 'make' = fungsi tanpa argumen yang menghasilkan bytes.
+    Di Streamlit versi baru file baru dibuat saat tombol diklik (halaman tidak melambat)."""
+    extra = {"on_click": "ignore"} if LAZY_DL else {}
+    box.download_button(label, make if LAZY_DL else make(), file_name=file_name,
+                        mime=XLSX_MIME, key=key, type="primary", **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -983,7 +1062,11 @@ def ranking_section(rank: pd.DataFrame, metric: str, share_col: str, color: str,
                 "Share %", format="%.2f%%", min_value=0,
                 max_value=float(r[share_col].max()) if len(r) else 100.0),
         })
-    st.download_button(f"⬇️ Unduh peringkat {metric} (CSV)",
+    e1, e2 = st.columns(2)
+    excel_download(e1, f"⬇️ Unduh peringkat {metric} (Excel)",
+                   lambda r=r: excel_book({f"Peringkat {metric}": r}),
+                   f"top_hotel_{key}.xlsx", f"dlx_{key}")
+    e2.download_button(f"⬇️ Unduh peringkat {metric} (CSV)",
                        r.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"top_hotel_{key}.csv", mime="text/csv", key=f"dl_{key}")
 
@@ -1084,6 +1167,7 @@ with tab_find:
         if hd.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
+            cmp_, mm = None, None
             inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
             scorecards(col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"),
                        int(inv.nunique()), len(hd))
@@ -1168,15 +1252,72 @@ with tab_find:
 
             with st.expander(f"📄 Detail transaksi ({angka(len(hd))} baris)"):
                 st.dataframe(hd.head(5000), width="stretch", height=380)
-            d1, d2 = st.columns(2)
-            d1.download_button("⬇️ Unduh ringkasan per hotel (CSV)",
+            # ---------------- Unduhan ----------------
+            st.markdown("##### ⬇️ Unduh")
+
+            mk = st.session_state.get("find_market", "Semua")
+
+            def make_hotel_excel(hd=hd, inv=inv, per_h=per_h, cmp_=cmp_, mm=mm,
+                                 sel_h=list(sel_h), market=mk):
+                rev, rn, bk = col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"), inv.nunique()
+                periode = "-"
+                if "Inv Date" in hd.columns and hd["Inv Date"].notna().any():
+                    periode = (f"{hd['Inv Date'].min():%d %b %Y} – "
+                               f"{hd['Inv Date'].max():%d %b %Y}")
+                hotels_txt = ("Semua hotel" if not sel_h else
+                              "; ".join(sel_h[:30]) + (f" … (+{len(sel_h) - 30})"
+                                                       if len(sel_h) > 30 else ""))
+                card = [
+                    ("Ringkasan Penjualan Hotel", None, "title"),
+                    ("Filter", None, None),
+                    ("Domestic / International", market, "text"),
+                    ("Hotel", hotels_txt, "text"),
+                    ("Periode Inv Date (data)", periode, "text"),
+                    ("Diunduh", pd.Timestamp.now().strftime("%d %b %Y %H:%M"), "text"),
+                    ("Scorecard", None, None),
+                    ("Revenue (Sales AR)", rev, "rp"),
+                    ("Total Room Night", rn, "num"),
+                    ("Total Booking (Invoice No. unik)", bk, "num"),
+                    ("Rata-rata Revenue / Room Night", rev / rn if rn else 0, "rp"),
+                    ("Rata-rata Revenue / Booking", rev / bk if bk else 0, "rp"),
+                    ("Jumlah baris transaksi", len(hd), "num"),
+                ]
+                sheets = {"Ringkasan per Hotel": per_h}
+                if cmp_ is not None and len(cmp_) > 1:
+                    sheets["Domestic vs International"] = (
+                        cmp_.reset_index().rename(columns={"_m": "Kategori"}))
+                if mm is not None:
+                    sheets["Tren Bulanan"] = mm.rename(columns={"RoomNight": "Room Night"})[
+                        ["Label", "Revenue", "Room Night", "Booking"]].rename(
+                        columns={"Label": "Bulan"})
+                det = hd.drop(columns=["Bulan"], errors="ignore")
+                if "Product Type" in det.columns:
+                    pos = det.columns.get_loc("Product Type") + 1
+                    det.insert(pos, "Domestic/International", market_type(det["Product Type"]))
+                sheets["Detail Transaksi"] = det
+                return excel_book(sheets, scorecard=card)
+
+            fname = ("hotel_" + re.sub(r"[^A-Za-z0-9]+", "_", sel_h[0])[:40]
+                     if len(sel_h) == 1 else "hotel_filter")
+            if mk != "Semua":
+                fname += f"_{mk.lower()}"
+            d0, d1, d2 = st.columns(3)
+            excel_download(d0, "⬇️ Unduh Excel (scorecard + ringkasan + detail)",
+                           make_hotel_excel, f"{fname}.xlsx", "dl_find_xlsx")
+            d1.download_button("⬇️ Ringkasan per hotel (CSV)",
                                per_h.to_csv(index=False).encode("utf-8-sig"),
                                file_name="ringkasan_per_hotel.csv", mime="text/csv",
                                key="dl_find_sum")
-            d2.download_button("⬇️ Unduh detail transaksi (CSV)",
+            d2.download_button("⬇️ Detail transaksi (CSV)",
                                hd.to_csv(index=False).encode("utf-8-sig"),
                                file_name="detail_transaksi_hotel.csv", mime="text/csv",
                                key="dl_find_det")
+            if len(hd) > EXCEL_MAX_ROWS:
+                st.caption("⚠️ Detail transaksi melebihi batas baris Excel; sheet detail dipotong. "
+                           "Gunakan CSV untuk data lengkap.")
+            else:
+                st.caption("File Excel berisi sheet: Scorecard, Ringkasan per Hotel, "
+                           "Domestic vs International (jika 'Semua'), Tren Bulanan, Detail Transaksi.")
 
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
@@ -1236,7 +1377,11 @@ with tab_hotel:
             st.dataframe(um, hide_index=True, width="stretch", height=320,
                          column_config={"Sales AR": st.column_config.NumberColumn(
                              format="localized")})
-            st.download_button("⬇️ Unduh daftar hotel belum standar (CSV)",
+            x1, x2 = st.columns(2)
+            excel_download(x1, "⬇️ Unduh daftar hotel belum standar (Excel)",
+                           lambda um=um: excel_book({"Hotel Belum Standar": um}),
+                           "hotel_belum_standar.xlsx", "dlx_unmatched")
+            x2.download_button("⬇️ Unduh daftar hotel belum standar (CSV)",
                                um.to_csv(index=False).encode("utf-8-sig"),
                                file_name="hotel_belum_standar.csv", mime="text/csv",
                                key="dl_unmatched")
