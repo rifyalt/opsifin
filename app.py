@@ -1015,6 +1015,18 @@ SCORECARD_CSS = """<style>
 </style>"""
 
 
+def market_type(sr: pd.Series) -> pd.Series:
+    """Kelompokkan nilai Product Type menjadi Domestic / International / Lainnya
+    berdasarkan kata kunci (tidak peka huruf besar/kecil), mis.
+    'Hotel Domestic', 'HOTEL DOM' -> Domestic; 'Hotel International', 'Hotel Intl' -> International."""
+    s = sr.astype(str).str.lower()
+    out = pd.Series("Lainnya", index=sr.index)
+    out[s.str.contains(r"\bdom|domestic|domestik|lokal|local", regex=True, na=False)] = "Domestic"
+    out[s.str.contains(r"\bint\b|\bintl|inter|internasional|overseas|luar negeri", regex=True,
+                       na=False)] = "International"
+    return out
+
+
 def scorecards(revenue: float, room_night: float, booking: int, n_rows: int):
     adr = rupiah_full(revenue / room_night) if room_night else "-"
     per_bk = rupiah_full(revenue / booking) if booking else "-"
@@ -1037,15 +1049,37 @@ with tab_find:
     else:
         st.caption("Pilih satu atau beberapa hotel (nama sudah distandarkan). Data tetap mengikuti "
                    "filter di sidebar & Filter Dashboard. Kosongkan pilihan untuk melihat semua hotel.")
-        h_opts = (fdata.groupby(hcol)["Sales AR"].sum().sort_values(ascending=False).index
+
+        # --- Filter Domestic / International (dari kolom Product Type) ---
+        base = fdata
+        if "Product Type" in fdata.columns:
+            mkt = market_type(fdata["Product Type"])
+            m_opts = ["Semua"] + [x for x in ["Domestic", "International", "Lainnya"]
+                                  if (mkt == x).any()]
+            sel_m = st.radio("Domestic / International (kolom Product Type)", m_opts,
+                             horizontal=True, key="find_market")
+            if sel_m != "Semua":
+                base = fdata[mkt == sel_m]
+            grp = (fdata.assign(_m=mkt)
+                   .groupby("_m")["Product Type"].unique()
+                   .map(lambda v: ", ".join(sorted(map(str, v)))))
+            st.caption(" · ".join(f"**{k}**: {v}" for k, v in grp.items()))
+        else:
+            st.info("Kolom Product Type tidak ada, filter Domestic/International tidak tersedia.")
+
+        h_opts = (base.groupby(hcol)["Sales AR"].sum().sort_values(ascending=False).index
                   .astype(str).tolist())
         f1, f2 = st.columns([3, 1])
         urut = f2.radio("Urutan pilihan", ["Revenue terbesar", "A–Z"], key="find_sort")
         if urut == "A–Z":
             h_opts = sorted(h_opts)
+        # Buang pilihan hotel yang tidak tersedia lagi setelah filter Domestic/International berubah
+        if "find_hotel" in st.session_state:
+            st.session_state["find_hotel"] = [h for h in st.session_state["find_hotel"]
+                                              if h in h_opts]
         sel_h = f1.multiselect("Nama hotel", h_opts, key="find_hotel",
                                placeholder="Ketik nama hotel... (kosong = semua hotel)")
-        hd = fdata[fdata[hcol].astype(str).isin(sel_h)] if sel_h else fdata
+        hd = base[base[hcol].astype(str).isin(sel_h)] if sel_h else base
 
         if hd.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
@@ -1053,6 +1087,24 @@ with tab_find:
             inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
             scorecards(col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"),
                        int(inv.nunique()), len(hd))
+
+            # Perbandingan Domestic vs International (saat 'Semua' dipilih)
+            if "Product Type" in hd.columns and st.session_state.get("find_market") == "Semua":
+                cmp_ = (hd.assign(_m=market_type(hd["Product Type"]).values, _inv=inv.values)
+                        .groupby("_m").agg(Revenue=("Sales AR", "sum"),
+                                           **{"Room Night": ("Room Night", "sum"),
+                                              "Booking": ("_inv", "nunique")}))
+                if len(cmp_) > 1:
+                    cmp_["Share Revenue %"] = cmp_["Revenue"] / cmp_["Revenue"].sum() * 100
+                    st.markdown("**Domestic vs International**")
+                    st.dataframe(cmp_.reset_index().rename(columns={"_m": "Kategori"}),
+                                 hide_index=True, width="stretch",
+                                 column_config={
+                                     "Revenue": st.column_config.NumberColumn(format="localized"),
+                                     "Room Night": st.column_config.NumberColumn(format="localized"),
+                                     "Booking": st.column_config.NumberColumn(format="localized"),
+                                     "Share Revenue %": st.column_config.ProgressColumn(
+                                         format="%.1f%%", min_value=0, max_value=100)})
 
             # Info hotel (kota, chain, rating) bila hanya 1 hotel dipilih
             if len(sel_h) == 1:
