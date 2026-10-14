@@ -52,6 +52,83 @@ BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "
 
 
 # ---------------------------------------------------------------------------
+# Standarisasi nama hotel dari file master (kolom STADARD NAME)
+#   File master default: unique_hotels.xlsx di folder yang sama dengan app.py,
+#   atau di-upload lewat sidebar. Sheet dipilih otomatis: sheet pertama yang
+#   punya kolom 'HOTEL NAME' + 'STADARD NAME' (sheet 'Standarized').
+#   Pencocokan: 1) persis (spasi dirapikan, &amp; dsb. di-unescape),
+#               2) jika tidak ketemu, tanpa membedakan huruf besar/kecil.
+#   Jika satu nama asli punya >1 nama standar di master, baris PALING BAWAH dipakai
+#   (blok bawah master = blok terbaru yang berisi CHAIN).
+# ---------------------------------------------------------------------------
+MASTER_FILE = "unique_hotels.xlsx"
+STD_COL_CANDIDATES = ["STADARD NAME", "STANDARD NAME"]
+
+
+def _clean_hotel(sr: pd.Series) -> pd.Series:
+    return (sr.astype(str).map(html.unescape)
+            .str.replace(" ", " ").str.replace(r"\s+", " ", regex=True).str.strip())
+
+
+def read_hotel_master(source) -> pd.DataFrame:
+    """Kembalikan master berkolom: _key, _key_lower, Standard Name, Hotel Chain, Hotel Rating."""
+    xls = pd.ExcelFile(source)
+    pick = None
+    for std_col in STD_COL_CANDIDATES:        # prioritas: kolom 'STADARD NAME'
+        for sh in xls.sheet_names:
+            head = pd.read_excel(xls, sh, nrows=0)
+            cols = {str(c).strip().upper(): c for c in head.columns}
+            if "HOTEL NAME" in cols and std_col in cols:
+                pick = (sh, cols["HOTEL NAME"], cols[std_col], cols.get("CHAIN", cols.get("CHAIN NAME")),
+                        cols.get("RATING", cols.get("CATEGORY")))
+                break
+        if pick:
+            break
+    if not pick:
+        raise ValueError("Tidak ditemukan sheet dengan kolom 'HOTEL NAME' dan 'STADARD NAME'.")
+    sh, c_name, c_std, c_chain, c_rating = pick
+    m = pd.read_excel(xls, sh, dtype=object)
+    out = pd.DataFrame({
+        "_key": _clean_hotel(m[c_name]),
+        "Standard Name": _clean_hotel(m[c_std]),
+        "Hotel Chain": m[c_chain] if c_chain is not None else None,
+        "Hotel Rating": pd.to_numeric(m[c_rating], errors="coerce") if c_rating is not None else None,
+    })
+    out = out[out["_key"].ne("") & out["_key"].ne("nan")
+              & out["Standard Name"].ne("") & out["Standard Name"].ne("nan")]
+    out["_key_lower"] = out["_key"].str.lower()
+    out.attrs["sheet"] = sh
+    return out.reset_index(drop=True)
+
+
+def _lookup(master: pd.DataFrame, key_col: str) -> pd.DataFrame:
+    """Satu baris per kunci: nama standar = baris terakhir; chain/rating = nilai terakhir yang terisi."""
+    g = master.groupby(key_col, sort=False)
+    res = g[["Hotel Chain", "Hotel Rating"]].last()       # last() melewati nilai kosong
+    res["Standard Name"] = g["Standard Name"].last()      # selalu terisi -> baris terakhir
+    # Lengkapi chain/rating dari baris lain yang nama standarnya sama
+    by_std = master.groupby("Standard Name")[["Hotel Chain", "Hotel Rating"]].last()
+    for c in ("Hotel Chain", "Hotel Rating"):
+        res[c] = res[c].fillna(res["Standard Name"].map(by_std[c]))
+    return res
+
+
+def standardize_hotels(names: pd.Series, master: pd.DataFrame) -> pd.DataFrame:
+    """names: nama hotel unik. Return DataFrame index=nama asli dengan kolom
+    Standard Name, Hotel Chain, Hotel Rating, Cocok ('Persis'/'Huruf besar-kecil'/None)."""
+    names = pd.Series(pd.unique(names.dropna().astype(str)))
+    key = _clean_hotel(names)
+    exact, lower = _lookup(master, "_key"), _lookup(master, "_key_lower")
+    a = exact.reindex(key.values).set_axis(names.values)
+    b = lower.reindex(key.str.lower().values).set_axis(names.values)
+    res = a.combine_first(b)
+    res["Cocok"] = None
+    res.loc[b["Standard Name"].notna().values, "Cocok"] = "Huruf besar-kecil"
+    res.loc[a["Standard Name"].notna().values, "Cocok"] = "Persis"
+    return res
+
+
+# ---------------------------------------------------------------------------
 # Pengelompokan nama hotel yang mirip (fuzzy matching)
 #   1. Normalisasi nama: huruf kecil, hapus isi kurung, '&' -> 'and', hapus tanda
 #      baca, kata umum (hotel, by IHG, managed by ...) dan nama kota hotel.
@@ -185,8 +262,10 @@ def build_hotel_groups(hotels: pd.DataFrame, threshold: int = 90,
                     best[ib] = min(best[ib], mat[a, b])
 
     df["_root"] = [uf.find(i) for i in range(len(df))]
-    # Nama grup = varian dengan transaksi terbanyak
-    canon = (df.sort_values("Transaksi", ascending=False)
+    # Nama grup = nama yang sudah standar (bila ada), lalu varian dengan transaksi terbanyak
+    if "Standar" not in df.columns:
+        df["Standar"] = False
+    canon = (df.sort_values(["Standar", "Transaksi"], ascending=False)
              .drop_duplicates("_root").set_index("_root")["Hotel Name"])
     df["Hotel (Grup)"] = df["_root"].map(canon)
     df["Jumlah Varian"] = df.groupby("_root")["Hotel Name"].transform("size")
@@ -341,12 +420,15 @@ def merge_frames(frames: list, drop_dup: bool) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Ekspor
 # ---------------------------------------------------------------------------
-def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame) -> bytes:
+def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame, extra: dict = None) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter",
                         engine_kwargs={"options": {"strings_to_urls": False}}) as w:
         df.to_excel(w, sheet_name="Merged Data", index=False)
         summary.to_excel(w, sheet_name="Ringkasan File", index=False)
+        for name, sheet in (extra or {}).items():
+            if sheet is not None and len(sheet):
+                sheet.to_excel(w, sheet_name=name[:31], index=False)
     return buf.getvalue()
 
 
@@ -370,7 +452,8 @@ else:
     p = Path(folder).expanduser()
     if p.is_dir():
         found = sorted(f for f in p.iterdir() if f.suffix.lower() in EXCEL_EXT
-                       and not f.name.startswith("~$"))
+                       and not f.name.startswith("~$")
+                       and f.name.lower() != MASTER_FILE)  # file master bukan data penjualan
         if found:
             chosen = st.sidebar.multiselect("File yang ditemukan", [f.name for f in found],
                                             default=[f.name for f in found])
@@ -447,6 +530,75 @@ st.caption(f"{len(frames)} file digabung → {angka(len(data))} baris, "
            f"{data.shape[1]} kolom · diproses dalam {time.time()-t0:.1f} detik")
 
 # ---------------------------------------------------------------------------
+# SIDEBAR: standarisasi nama hotel (master STADARD NAME)
+# ---------------------------------------------------------------------------
+@st.cache_data(show_spinner="Membaca master nama hotel...")
+def load_master_bytes(b: bytes) -> pd.DataFrame:
+    return read_hotel_master(io.BytesIO(b))
+
+
+@st.cache_data(show_spinner="Membaca master nama hotel...")
+def load_master_path(path: str, mtime: float) -> pd.DataFrame:
+    return read_hotel_master(path)
+
+
+@st.cache_data(show_spinner=False)
+def cached_standardize(names: tuple, master: pd.DataFrame) -> pd.DataFrame:
+    return standardize_hotels(pd.Series(names), master)
+
+
+st.sidebar.divider()
+st.sidebar.title("📘 Standarisasi Nama Hotel")
+std_on = "Hotel Name" in data.columns and st.sidebar.toggle(
+    "Gunakan nama standar (STADARD NAME)", value=True,
+    help="Kolom 'Hotel Name' diganti dengan nama standar dari file master. "
+         "Nama asli tetap disimpan di kolom 'Hotel Name (Asli)'.")
+std_table = None  # hasil pencocokan per nama asli (untuk tab Grup Hotel & ekspor)
+
+if std_on:
+    master_up = st.sidebar.file_uploader(
+        "File master hotel (opsional)", type=["xlsx", "xls"], key="master_up",
+        help=f"Kosongkan untuk memakai '{MASTER_FILE}' di folder aplikasi. "
+             "Wajib berisi kolom HOTEL NAME dan STADARD NAME.")
+    master, default_path = None, Path(__file__).parent / MASTER_FILE
+    try:
+        if master_up is not None:
+            master = load_master_bytes(master_up.getvalue())
+        elif default_path.exists():
+            master = load_master_path(str(default_path), default_path.stat().st_mtime)
+        else:
+            st.sidebar.warning(f"Upload file master, atau taruh '{MASTER_FILE}' "
+                               "di folder yang sama dengan app.py.")
+    except Exception as e:  # noqa: BLE001
+        st.sidebar.error(f"Gagal membaca master: {e}")
+
+    if master is not None:
+        std_table = cached_standardize(tuple(pd.unique(data["Hotel Name"].dropna().astype(str))),
+                                       master)
+        orig = data["Hotel Name"]
+        key_ = orig.astype(str)
+        std_name = key_.map(std_table["Standard Name"])
+        data = data.assign(**{
+            "Hotel Name": std_name.fillna(orig).where(orig.notna(), orig),
+            "Hotel Name (Asli)": orig,
+            "Hotel Chain": key_.map(std_table["Hotel Chain"]),
+            "Hotel Rating": key_.map(std_table["Hotel Rating"]),
+        })
+        # Taruh kolom tambahan tepat setelah 'Hotel Name'
+        cols_ = [c for c in data.columns if c not in ("Hotel Name (Asli)", "Hotel Chain", "Hotel Rating")]
+        pos = cols_.index("Hotel Name") + 1
+        data = data[cols_[:pos] + ["Hotel Name (Asli)", "Hotel Chain", "Hotel Rating"] + cols_[pos:]]
+
+        n_names = len(std_table)
+        n_hit = int(std_table["Standard Name"].notna().sum())
+        rows_hit = std_name.notna().mean() * 100 if len(data) else 0
+        st.sidebar.caption(
+            f"Master: sheet '{master.attrs.get('sheet', '-')}', {angka(len(master))} baris. "
+            f"{angka(n_hit)} dari {angka(n_names)} nama hotel cocok "
+            f"({rows_hit:.1f}% baris transaksi). Nama yang tidak cocok tetap memakai nama asli — "
+            "lihat daftarnya di tab **Grup Hotel**.")
+
+# ---------------------------------------------------------------------------
 # SIDEBAR: merge hotel mirip (fuzzy)
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Mengelompokkan nama hotel yang mirip...")
@@ -484,6 +636,9 @@ if hotel_on:
 
     hotels = (data.groupby(["Hotel Name", "Hotel City"], dropna=False).size()
               .reset_index(name="Transaksi"))
+    # Nama yang sudah standar diprioritaskan menjadi nama grup
+    std_names = set(std_table["Standard Name"].dropna()) if std_table is not None else set()
+    hotels["Standar"] = hotels["Hotel Name"].isin(std_names)
     mapping = cached_hotel_groups(hotels, threshold, same_city, stopwords).copy()
 
     # Koreksi manual dari pengguna (tab Grup Hotel) selalu menang
@@ -631,8 +786,22 @@ if fdata.empty:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_dash, tab_top, tab_data, tab_hotel, tab_file = st.tabs(
-    ["📈 Dashboard", "🏆 Top Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel", "📁 Ringkasan File"])
+tab_dash, tab_top, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
+    ["📈 Dashboard", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
+     "📁 Ringkasan File"])
+
+
+def unmatched_hotels() -> pd.DataFrame:
+    """Nama hotel asli yang tidak ditemukan di master, beserta jumlah transaksinya."""
+    if std_table is None:
+        return pd.DataFrame()
+    miss = std_table.index[std_table["Standard Name"].isna()]
+    d = data[data["Hotel Name (Asli)"].astype(str).isin(miss)]
+    return (d.groupby(["Hotel Name (Asli)", "Hotel City"], dropna=False)
+            .agg(Transaksi=("Hotel Name (Asli)", "size"), **{"Sales AR": ("Sales AR", "sum")})
+            .reset_index().rename(columns={"Hotel Name (Asli)": "HOTEL NAME"})
+            .assign(**{"STADARD NAME": ""})
+            .sort_values("Transaksi", ascending=False).reset_index(drop=True))
 
 
 def col_sum(df, c):
@@ -834,6 +1003,129 @@ with tab_top:
         with sub2:
             ranking_section(rank, "Room Night", "Share RN %", "#3B8B5A", angka, "roomnight")
 
+SCORECARD_CSS = """<style>
+.sc-wrap {display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:6px 0 18px;}
+.sc {border-radius:14px; padding:16px 18px; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.12);}
+.sc .lbl {font-size:.85rem; opacity:.9; text-transform:uppercase; letter-spacing:.04em;}
+.sc .val {font-size:clamp(1.35rem,2.3vw,2rem); font-weight:700; margin:4px 0 2px; word-break:break-word;}
+.sc .sub {font-size:.8rem; opacity:.85;}
+.sc.rev {background:linear-gradient(135deg,#1f6f9f,#2E86AB);}
+.sc.rn  {background:linear-gradient(135deg,#2a6b45,#3B8B5A);}
+.sc.bk  {background:linear-gradient(135deg,#a8580a,#F18F01);}
+</style>"""
+
+
+def scorecards(revenue: float, room_night: float, booking: int, n_rows: int):
+    adr = rupiah_full(revenue / room_night) if room_night else "-"
+    per_bk = rupiah_full(revenue / booking) if booking else "-"
+    st.markdown(SCORECARD_CSS + f"""
+<div class="sc-wrap">
+  <div class="sc rev"><div class="lbl">💰 Revenue</div>
+    <div class="val">{rupiah_full(revenue)}</div><div class="sub">Total Sales AR</div></div>
+  <div class="sc rn"><div class="lbl">🛏️ Total Room Night</div>
+    <div class="val">{angka(room_night)}</div><div class="sub">Room × Night · rata-rata {adr} / RN</div></div>
+  <div class="sc bk"><div class="lbl">🧾 Total Booking</div>
+    <div class="val">{angka(booking)}</div>
+    <div class="sub">Invoice No. unik · {angka(n_rows)} baris · {per_bk} / booking</div></div>
+</div>""", unsafe_allow_html=True)
+
+
+with tab_find:
+    hcol = "Hotel (Grup)"
+    if hcol not in fdata.columns:
+        st.info("Kolom Hotel Name tidak tersedia pada data.")
+    else:
+        st.caption("Pilih satu atau beberapa hotel (nama sudah distandarkan). Data tetap mengikuti "
+                   "filter di sidebar & Filter Dashboard. Kosongkan pilihan untuk melihat semua hotel.")
+        h_opts = (fdata.groupby(hcol)["Sales AR"].sum().sort_values(ascending=False).index
+                  .astype(str).tolist())
+        f1, f2 = st.columns([3, 1])
+        urut = f2.radio("Urutan pilihan", ["Revenue terbesar", "A–Z"], key="find_sort")
+        if urut == "A–Z":
+            h_opts = sorted(h_opts)
+        sel_h = f1.multiselect("Nama hotel", h_opts, key="find_hotel",
+                               placeholder="Ketik nama hotel... (kosong = semua hotel)")
+        hd = fdata[fdata[hcol].astype(str).isin(sel_h)] if sel_h else fdata
+
+        if hd.empty:
+            st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
+        else:
+            inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
+            scorecards(col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"),
+                       int(inv.nunique()), len(hd))
+
+            # Info hotel (kota, chain, rating) bila hanya 1 hotel dipilih
+            if len(sel_h) == 1:
+                info = []
+                for c, lbl in [("Hotel City", "Kota"), ("Hotel Chain", "Chain"),
+                               ("Hotel Rating", "Rating")]:
+                    if c in hd.columns and hd[c].notna().any():
+                        v = hd[c].dropna().astype(str).mode().iat[0]
+                        info.append(f"**{lbl}:** {'⭐' * int(float(v)) if c == 'Hotel Rating' else v}")
+                if "Hotel Name (Asli)" in hd.columns:
+                    var = sorted(hd["Hotel Name (Asli)"].dropna().astype(str).unique())
+                    info.append(f"**Penulisan asli ({len(var)}):** " + "; ".join(var[:10])
+                                + (" …" if len(var) > 10 else ""))
+                st.markdown(" · ".join(info))
+
+            # Tren bulanan
+            if "Bulan" in hd.columns:
+                mm = (hd.assign(_inv=inv.values).groupby("Bulan")
+                      .agg(Revenue=("Sales AR", "sum"), RoomNight=("Room Night", "sum"),
+                           Booking=("_inv", "nunique")).reset_index())
+                mm["Label"] = (mm["Bulan"].dt.month.map(lambda x: BULAN[x - 1]) + " "
+                               + mm["Bulan"].dt.strftime("%y"))
+                fg = go.Figure()
+                fg.add_bar(x=mm["Label"], y=mm["Revenue"], name="Revenue", marker_color="#2E86AB")
+                fg.add_scatter(x=mm["Label"], y=mm["RoomNight"], name="Room Night", yaxis="y2",
+                               mode="lines+markers", line=dict(color="#3B8B5A", width=3))
+                fg.add_scatter(x=mm["Label"], y=mm["Booking"], name="Booking", yaxis="y2",
+                               mode="lines+markers", line=dict(color="#F18F01", width=2, dash="dot"))
+                fg.update_layout(title="Tren Bulanan: Revenue, Room Night & Booking", height=420,
+                                 yaxis=dict(title="Revenue (Rp)"),
+                                 yaxis2=dict(title="Room Night / Booking", overlaying="y",
+                                             side="right"),
+                                 legend=dict(orientation="h", y=1.12), margin=dict(t=80, b=30))
+                st.plotly_chart(fg, width="stretch", key="find_trend")
+
+            # Ringkasan per hotel
+            g = hd.assign(_inv=inv.values).groupby(hcol)
+            per_h = g.agg(Revenue=("Sales AR", "sum"), **{"Room Night": ("Room Night", "sum"),
+                                                          "Booking": ("_inv", "nunique")})
+            for c, lbl in [("Hotel City", "Kota"), ("Hotel Chain", "Chain"),
+                           ("Hotel Rating", "Rating")]:
+                if c in hd.columns:
+                    per_h[lbl] = g[c].agg(lambda s: s.dropna().mode().iat[0]
+                                          if s.notna().any() else None)
+            per_h = per_h[[c for c in ["Kota", "Chain", "Rating"] if c in per_h.columns]
+                          + ["Revenue", "Room Night", "Booking"]]
+            per_h["Rata-rata / Room Night"] = per_h["Revenue"] / per_h["Room Night"].where(
+                per_h["Room Night"] > 0)
+            per_h = (per_h.sort_values("Revenue", ascending=False).reset_index()
+                     .rename(columns={hcol: "Hotel"}))
+            st.markdown(f"**Ringkasan per hotel ({angka(len(per_h))} hotel)**")
+            st.dataframe(per_h, hide_index=True, width="stretch", height=min(420, 38 + 35 * len(per_h)),
+                         column_config={
+                             "Revenue": st.column_config.NumberColumn(format="localized"),
+                             "Room Night": st.column_config.NumberColumn(format="localized"),
+                             "Booking": st.column_config.NumberColumn(format="localized"),
+                             "Rata-rata / Room Night": st.column_config.NumberColumn(
+                                 format="localized"),
+                             "Rating": st.column_config.NumberColumn(format="%d ⭐"),
+                         })
+
+            with st.expander(f"📄 Detail transaksi ({angka(len(hd))} baris)"):
+                st.dataframe(hd.head(5000), width="stretch", height=380)
+            d1, d2 = st.columns(2)
+            d1.download_button("⬇️ Unduh ringkasan per hotel (CSV)",
+                               per_h.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="ringkasan_per_hotel.csv", mime="text/csv",
+                               key="dl_find_sum")
+            d2.download_button("⬇️ Unduh detail transaksi (CSV)",
+                               hd.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="detail_transaksi_hotel.csv", mime="text/csv",
+                               key="dl_find_det")
+
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
     st.caption(f"{angka(len(fdata))} baris. Tabel menampilkan maksimal 5.000 baris pertama.")
@@ -858,7 +1150,8 @@ with tab_data:
             if fmt == "CSV":
                 payload = export_df.to_csv(index=False).encode("utf-8-sig")
             else:
-                payload = to_excel_bytes(export_df, summary)
+                payload = to_excel_bytes(export_df, summary,
+                                         {"Hotel Belum Standar": unmatched_hotels()})
             st.session_state["export"] = (sig, payload)
 
     if st.session_state.get("export", (None,))[0] == sig:
@@ -872,6 +1165,31 @@ with tab_data:
             type="primary")
 
 with tab_hotel:
+    if std_table is not None:
+        st.subheader("Standarisasi nama hotel (master STADARD NAME)")
+        um = unmatched_hotels()
+        n_tot = len(std_table)
+        n_ok = int(std_table["Standard Name"].notna().sum())
+        u1, u2, u3 = st.columns(3)
+        u1.metric("Nama hotel asli", angka(n_tot))
+        u2.metric("Cocok dengan master", angka(n_ok),
+                  help=f"Persis: {angka((std_table['Cocok'] == 'Persis').sum())} · "
+                       f"beda huruf besar/kecil saja: "
+                       f"{angka((std_table['Cocok'] == 'Huruf besar-kecil').sum())}")
+        u3.metric("Belum ada di master", angka(n_tot - n_ok))
+        with st.expander(f"⚠️ Nama hotel yang belum ada di master ({angka(len(um))})",
+                         expanded=False):
+            st.caption("Nama ini tetap memakai penulisan asli. Isi kolom STADARD NAME di file CSV "
+                       "unduhan, lalu salin ke file master agar ikut distandarkan.")
+            st.dataframe(um, hide_index=True, width="stretch", height=320,
+                         column_config={"Sales AR": st.column_config.NumberColumn(
+                             format="localized")})
+            st.download_button("⬇️ Unduh daftar hotel belum standar (CSV)",
+                               um.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="hotel_belum_standar.csv", mime="text/csv",
+                               key="dl_unmatched")
+        st.divider()
+
     if not hotel_on or mapping is None:
         st.info("Aktifkan **Gabungkan nama hotel yang mirip** di sidebar untuk melihat "
                 "dan mengoreksi pengelompokan hotel.")
