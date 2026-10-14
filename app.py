@@ -426,6 +426,29 @@ EXCEL_MAX_ROWS = 1_048_575
 LAZY_DL = "callable" in (st.download_button.__doc__ or "")
 
 
+# Kolom nominal hasil ringkasan yang dibulatkan ke rupiah penuh (tanpa desimal)
+MONEY_COL_RE = re.compile(r"^(Revenue|Sales AR|Profit|Rata-rata)", re.IGNORECASE)
+# Sheet data mentah: angka dibiarkan apa adanya (tidak dibulatkan)
+RAW_SHEETS = {"Merged Data", "Detail Transaksi"}
+
+
+def round_money(x):
+    """Bulatkan ke bilangan bulat terdekat (0,5 ke atas, seperti pembulatan rupiah biasa)."""
+    import numpy as np
+    return np.sign(x) * np.floor(np.abs(x) + 0.5)
+
+
+def round_money_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Kolom Revenue / Sales AR / Profit / Rata-rata ... -> bilangan bulat (tipe number).
+    Kolom persen (mengandung '%') tidak diubah."""
+    out = df.copy()
+    for c in out.columns:
+        if (MONEY_COL_RE.match(str(c)) and "%" not in str(c)
+                and pd.api.types.is_numeric_dtype(out[c])):
+            out[c] = round_money(out[c].astype(float)).astype("Int64")
+    return out
+
+
 def excel_book(sheets: dict, scorecard: list = None) -> bytes:
     """Buat workbook Excel yang rapi: header tebal, freeze baris pertama, autofilter,
     lebar kolom otomatis, format ribuan untuk angka & format tanggal.
@@ -465,7 +488,7 @@ def excel_book(sheets: dict, scorecard: list = None) -> bytes:
                 else:
                     ws.write(r, 0, label, f_lbl)
                     if fmt == "rp":
-                        ws.write_number(r, 1, float(value or 0), f_rp)
+                        ws.write_number(r, 1, int(round_money(float(value or 0))), f_rp)
                     elif fmt == "num":
                         ws.write_number(r, 1, float(value or 0), f_n)
                     else:
@@ -477,6 +500,8 @@ def excel_book(sheets: dict, scorecard: list = None) -> bytes:
                 continue
             sh = name[:31]
             df = df.head(EXCEL_MAX_ROWS)
+            if sh not in RAW_SHEETS:
+                df = round_money_cols(df)
             df.to_excel(w, sheet_name=sh, index=False)
             ws = w.sheets[sh]
             for j, col in enumerate(df.columns):
@@ -1067,7 +1092,7 @@ def ranking_section(rank: pd.DataFrame, metric: str, share_col: str, color: str,
                    lambda r=r: excel_book({f"Peringkat {metric}": r}),
                    f"top_hotel_{key}.xlsx", f"dlx_{key}")
     e2.download_button(f"⬇️ Unduh peringkat {metric} (CSV)",
-                       r.to_csv(index=False).encode("utf-8-sig"),
+                       round_money_cols(r).to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"top_hotel_{key}.csv", mime="text/csv", key=f"dl_{key}")
 
 
@@ -1305,7 +1330,7 @@ with tab_find:
             excel_download(d0, "⬇️ Unduh Excel (scorecard + ringkasan + detail)",
                            make_hotel_excel, f"{fname}.xlsx", "dl_find_xlsx")
             d1.download_button("⬇️ Ringkasan per hotel (CSV)",
-                               per_h.to_csv(index=False).encode("utf-8-sig"),
+                               round_money_cols(per_h).to_csv(index=False).encode("utf-8-sig"),
                                file_name="ringkasan_per_hotel.csv", mime="text/csv",
                                key="dl_find_sum")
             d2.download_button("⬇️ Detail transaksi (CSV)",
