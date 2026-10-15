@@ -1563,19 +1563,10 @@ with tab_find:
         if hd.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
-            cmp_, mm = None, None
+            mm = None
             inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
             scorecards(col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"),
                        int(inv.nunique()), len(hd))
-
-            # Perbandingan Domestic vs International (saat 'Semua' dipilih)
-            if "Product Type" in hd.columns and st.session_state.get("find_market") == "Semua":
-                cmp_ = (hd.assign(_m=market_type(hd["Product Type"]).values, _inv=inv.values)
-                        .groupby("_m").agg(Revenue=("Sales AR", "sum"),
-                                           **{"Room Night": ("Room Night", "sum"),
-                                              "Booking": ("_inv", "nunique")}))
-                if len(cmp_) > 1:  # tabelnya ditampilkan di tab Dashboard; di sini untuk ekspor Excel
-                    cmp_["Share Revenue %"] = cmp_["Revenue"] / cmp_["Revenue"].sum() * 100
 
             # Info hotel (kota, chain, rating) bila hanya 1 hotel dipilih
             if len(sel_h) == 1:
@@ -1636,75 +1627,6 @@ with tab_find:
                                  format="localized"),
                              "Rating": st.column_config.NumberColumn(format="%d ⭐"),
                          })
-
-            with st.expander(f"📄 Detail transaksi ({angka(len(hd))} baris)"):
-                st.dataframe(hd.head(5000), width="stretch", height=380)
-            # ---------------- Unduhan ----------------
-            st.markdown("##### ⬇️ Unduh")
-
-            mk = st.session_state.get("find_market", "Semua")
-
-            def make_hotel_excel(hd=hd, inv=inv, per_h=per_h, cmp_=cmp_, mm=mm,
-                                 sel_h=list(sel_h), market=mk):
-                rev, rn, bk = col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"), inv.nunique()
-                periode = "-"
-                if "Inv Date" in hd.columns and hd["Inv Date"].notna().any():
-                    periode = (f"{hd['Inv Date'].min():%d %b %Y} – "
-                               f"{hd['Inv Date'].max():%d %b %Y}")
-                hotels_txt = ("Semua hotel" if not sel_h else
-                              "; ".join(sel_h[:30]) + (f" … (+{len(sel_h) - 30})"
-                                                       if len(sel_h) > 30 else ""))
-                card = [
-                    ("Ringkasan Penjualan Hotel", None, "title"),
-                    ("Filter", None, None),
-                    ("Domestic / International", market, "text"),
-                    ("Hotel", hotels_txt, "text"),
-                    ("Periode Inv Date (data)", periode, "text"),
-                    ("Diunduh", pd.Timestamp.now().strftime("%d %b %Y %H:%M"), "text"),
-                    ("Scorecard", None, None),
-                    ("Revenue (Sales AR)", rev, "rp"),
-                    ("Total Room Night", rn, "num"),
-                    ("Total Booking (Invoice No. unik)", bk, "num"),
-                    ("Rata-rata Revenue / Room Night", rev / rn if rn else 0, "rp"),
-                    ("Rata-rata Revenue / Booking", rev / bk if bk else 0, "rp"),
-                    ("Jumlah baris transaksi", len(hd), "num"),
-                ]
-                sheets = {"Ringkasan per Hotel": per_h}
-                if cmp_ is not None and len(cmp_) > 1:
-                    sheets["Domestic vs International"] = (
-                        cmp_.reset_index().rename(columns={"_m": "Kategori"}))
-                if mm is not None:
-                    sheets["Tren Bulanan"] = mm.rename(columns={"RoomNight": "Room Night"})[
-                        ["Label", "Revenue", "Room Night", "Booking"]].rename(
-                        columns={"Label": "Bulan"})
-                det = hd.drop(columns=["Bulan"], errors="ignore")
-                if "Product Type" in det.columns:
-                    pos = det.columns.get_loc("Product Type") + 1
-                    det.insert(pos, "Domestic/International", market_type(det["Product Type"]))
-                sheets["Detail Transaksi"] = det
-                return excel_book(sheets, scorecard=card)
-
-            fname = ("hotel_" + re.sub(r"[^A-Za-z0-9]+", "_", sel_h[0])[:40]
-                     if len(sel_h) == 1 else "hotel_filter")
-            if mk != "Semua":
-                fname += f"_{mk.lower()}"
-            d0, d1, d2 = st.columns(3)
-            excel_download(d0, "⬇️ Unduh Excel (scorecard + ringkasan + detail)",
-                           make_hotel_excel, f"{fname}.xlsx", "dl_find_xlsx")
-            d1.download_button("⬇️ Ringkasan per hotel (CSV)",
-                               round_money_cols(per_h).to_csv(index=False).encode("utf-8-sig"),
-                               file_name="ringkasan_per_hotel.csv", mime="text/csv",
-                               key="dl_find_sum")
-            d2.download_button("⬇️ Detail transaksi (CSV)",
-                               hd.to_csv(index=False).encode("utf-8-sig"),
-                               file_name="detail_transaksi_hotel.csv", mime="text/csv",
-                               key="dl_find_det")
-            if len(hd) > EXCEL_MAX_ROWS:
-                st.caption("⚠️ Detail transaksi melebihi batas baris Excel; sheet detail dipotong. "
-                           "Gunakan CSV untuk data lengkap.")
-            else:
-                st.caption("File Excel berisi sheet: Scorecard, Ringkasan per Hotel, "
-                           "Domestic vs International (jika 'Semua'), Tren Bulanan, Detail Transaksi.")
 
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
