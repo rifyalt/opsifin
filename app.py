@@ -44,12 +44,21 @@ h1 {font-size: 1.85rem !important; font-weight: 700 !important; letter-spacing: 
 .stTabs [data-baseweb="tab-list"] {gap: 6px;}
 .stTabs [data-baseweb="tab"] {padding: 8px 14px; border-radius: 10px 10px 0 0;}
 .sec-h {display:flex; align-items:baseline; gap:10px; margin: 6px 0 2px;}
-.sec-h .t {font-size: 1.05rem; font-weight: 700;}
+.sec-h .t {font-size: 1.05rem; font-weight: 700; color: #434343;}
+h1 {color: #434343;}
+.stTabs [aria-selected="true"] {color: #0D7FCC !important;}
+.stTabs [data-baseweb="tab-highlight"] {background-color: #0D7FCC !important;}
+.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"],
+[data-testid="stBaseButton-primary"] {background: #0D7FCC !important; border-color: #0D7FCC !important;}
+.stButton > button[kind="primary"]:hover, .stDownloadButton > button[kind="primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {background: #1BA0E2 !important; border-color: #1BA0E2 !important;}
+[class*="st-key-card"] {border-top: 3px solid #1BA0E2 !important;}
 .sec-h .s {font-size: .82rem; opacity: .6;}
 </style>""", unsafe_allow_html=True)
 
-# Palet warna yang dipakai di semua grafik dashboard
-PALETTE = ["#1f6fb2", "#2a8a57", "#d9730d", "#6b4fbb", "#14808a", "#c2416b", "#7a8699"]
+# Palet warna tema (brand): #434343 (Pantone 446), #1BA0E2 (2925C),
+# #1494C6 (Hexachrome Cyan), #0D7FCC (299 2X) + turunan terangnya
+PALETTE = ["#0D7FCC", "#1BA0E2", "#434343", "#8FD0F1", "#1494C6", "#A6A6A6", "#BFE4F7"]
 
 
 def section(title: str, subtitle: str = "", box=None):
@@ -534,15 +543,15 @@ def excel_book(sheets: dict, scorecard: list = None) -> bytes:
                         date_format="dd-mmm-yyyy",
                         engine_kwargs={"options": {"strings_to_urls": False}}) as w:
         wb = w.book
-        f_head = wb.add_format({"bold": True, "bg_color": "#1F4E78", "font_color": "#FFFFFF",
+        f_head = wb.add_format({"bold": True, "bg_color": "#0D7FCC", "font_color": "#FFFFFF",
                                 "border": 1, "text_wrap": True, "valign": "vcenter"})
         f_num = wb.add_format({"num_format": "#,##0"})
         f_pct = wb.add_format({"num_format": "0.00"})
 
         if scorecard:
             ws = wb.add_worksheet("Scorecard")
-            f_title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#1F4E78"})
-            f_sec = wb.add_format({"bold": True, "bg_color": "#DDEBF7", "border": 1})
+            f_title = wb.add_format({"bold": True, "font_size": 14, "font_color": "#0D7FCC"})
+            f_sec = wb.add_format({"bold": True, "bg_color": "#E3F2FB", "border": 1})
             f_lbl = wb.add_format({"border": 1})
             f_rp = wb.add_format({"num_format": '"Rp "#,##0', "border": 1, "bold": True})
             f_n = wb.add_format({"num_format": "#,##0", "border": 1, "bold": True})
@@ -994,19 +1003,19 @@ KPI_CSS = """<style>
 .kpi .sub {font-size:.82rem; color:var(--kpi-mute); margin-top:6px;}
 .kpi .bar {height:6px; border-radius:99px; background:var(--kpi-soft); margin-top:10px; overflow:hidden;}
 .kpi .bar > span {display:block; height:100%; border-radius:99px; background:var(--kpi-c);}
-.kpi {--kpi-bg:#ffffff; --kpi-bd:#e8ebf0; --kpi-ink:#1d2433; --kpi-mute:#6b7385;}
-.kpi.blue   {--kpi-c:#1f6fb2; --kpi-soft:#e6f0fa;}
-.kpi.green  {--kpi-c:#2a8a57; --kpi-soft:#e5f4ec;}
-.kpi.orange {--kpi-c:#d9730d; --kpi-soft:#fdf0e2;}
-.kpi.purple {--kpi-c:#6b4fbb; --kpi-soft:#efebfa;}
-.kpi.teal   {--kpi-c:#14808a; --kpi-soft:#e2f3f4;}
-.kpi.rose   {--kpi-c:#c2416b; --kpi-soft:#fbe8ef;}
+.kpi {--kpi-bg:#ffffff; --kpi-bd:#e8ebf0; --kpi-ink:#434343; --kpi-mute:#7A7A7A;}
+.kpi.blue   {--kpi-c:#0D7FCC; --kpi-soft:#E3F1FB;}
+.kpi.green  {--kpi-c:#1BA0E2; --kpi-soft:#E4F5FC;}
+.kpi.orange {--kpi-c:#1494C6; --kpi-soft:#E2F2F8;}
+.kpi.purple {--kpi-c:#434343; --kpi-soft:#EDEDED;}
+.kpi.teal   {--kpi-c:#0D7FCC; --kpi-soft:#E3F1FB;}
+.kpi.rose   {--kpi-c:#1BA0E2; --kpi-soft:#E4F5FC;}
 @media (prefers-color-scheme: dark) {
-  .kpi {--kpi-bg:#1b1f2a; --kpi-bd:#2b3140; --kpi-ink:#f1f3f7; --kpi-mute:#a3abbb;}
-  .kpi.blue{--kpi-soft:#1d3349;} .kpi.green{--kpi-soft:#1b3a2b;} .kpi.orange{--kpi-soft:#43301a;}
-  .kpi.purple{--kpi-soft:#2f2a4a;} .kpi.teal{--kpi-soft:#163a3e;} .kpi.rose{--kpi-soft:#43212d;}
+  .kpi {--kpi-bg:#1b1f2a; --kpi-bd:#2b3140; --kpi-ink:#f1f3f7; --kpi-mute:#B5B5B5;}
+  .kpi.blue{--kpi-soft:#13324A;} .kpi.green{--kpi-soft:#14384A;} .kpi.orange{--kpi-soft:#133443;}
+  .kpi.purple{--kpi-soft:#333333;} .kpi.teal{--kpi-soft:#13324A;} .kpi.rose{--kpi-soft:#14384A;}
 }
-.kpi-cap {font-size:.8rem; color:#8a91a1; margin:2px 0 14px;}
+.kpi-cap {font-size:.8rem; color:#8C8C8C; margin:2px 0 14px;}
 </style>"""
 
 
@@ -1056,7 +1065,7 @@ def dashboard_pdf(dash: dict) -> bytes:
     from matplotlib.patches import FancyBboxPatch, Rectangle
     from matplotlib.ticker import FuncFormatter
 
-    INK, MUTE, LINE = "#1d2433", "#6b7385", "#e3e6ec"
+    INK, MUTE, LINE = "#434343", "#7A7A7A", "#e3e6ec"
     plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 7, "axes.edgecolor": LINE,
                          "axes.labelcolor": MUTE, "xtick.color": MUTE, "ytick.color": MUTE})
     fig = plt.figure(figsize=(8.27, 11.69))
@@ -1137,7 +1146,7 @@ def dashboard_pdf(dash: dict) -> bytes:
         if key not in dash:
             continue
         title, sub, t, cap = dash[key]
-        sec(0.565, title, sub, x=x0, x_end=x0 + 0.44)
+        sec(0.565, title, sub.split(" · ")[0], x=x0, x_end=x0 + 0.44)
         t = t.copy()
         t["Customer"] = t["Customer"].map(lambda s: _cut(s, 30))
         t = t.rename(columns={"Rank": "#", "Avg Booking / Bulan": "Avg/Bulan"})
@@ -1171,7 +1180,7 @@ def dashboard_pdf(dash: dict) -> bytes:
             if yy < 0.14:
                 break
             bg.add_patch(Rectangle((x0 + 0.225, yy - 0.002), 0.008, 0.008, fc=PALETTE[j % len(PALETTE)]))
-            bg.text(x0 + 0.238, yy, _cut(name, 19), fontsize=6.3, color=INK, va="bottom")
+            bg.text(x0 + 0.238, yy, _cut(name, 17), fontsize=6.3, color=INK, va="bottom")
             bg.text(x0 + 0.44, yy, f"{angka(v)}  ·  " + pct(v / tot * 100), fontsize=6.3,
                     color=MUTE, va="bottom", ha="right")
 
@@ -1238,14 +1247,14 @@ with tab_dash:
     dash["info"] = f"{angka(len(fdata))} baris transaksi"
     dash["kpi"] = [
         ("Total Sales AR", rupiah_full(sales),
-         f"Rata-rata {rupiah_full(sales / n_inv) if n_inv else '-'} / invoice", "#1f6fb2"),
+         f"Rata-rata {rupiah_full(sales / n_inv) if n_inv else '-'} / invoice", "#0D7FCC"),
         ("Total Profit", rupiah_full(profit),
-         f"Rata-rata {rupiah_full(profit / n_inv) if n_inv else '-'} / invoice", "#2a8a57"),
-        ("Margin", f"{margin:.2f}%", "Total Profit ÷ Total Sales AR", "#d9730d"),
-        ("Jumlah Invoice (unik)", angka(n_inv), f"dari {angka(len(fdata))} baris transaksi", "#6b4fbb"),
+         f"Rata-rata {rupiah_full(profit / n_inv) if n_inv else '-'} / invoice", "#1BA0E2"),
+        ("Margin", f"{margin:.2f}%", "Total Profit ÷ Total Sales AR", "#1494C6"),
+        ("Jumlah Invoice (unik)", angka(n_inv), f"dari {angka(len(fdata))} baris transaksi", "#434343"),
         ("Room Night", angka(rn), f"Rata-rata {rupiah_full(sales / rn) if rn else '-'} / room night",
-         "#14808a"),
-        ("Jumlah Hotel", angka(n_hotel), f"di {angka(n_city)} kota", "#c2416b"),
+         "#0D7FCC"),
+        ("Jumlah Hotel", angka(n_hotel), f"di {angka(n_city)} kota", "#1BA0E2"),
     ]
 
     # Tren bulanan
@@ -1510,7 +1519,7 @@ def ranking_section(rank: pd.DataFrame, metric: str, share_col: str, color: str,
 
     # Rata-rata harga per room night untuk hotel yang sama (urutan sama dengan grafik kiri)
     adr = chart.assign(ADR=chart["Rata-rata / Room Night"].fillna(0))
-    f_adr = px.bar(adr, x="ADR", y="Hotel", orientation="h", color_discrete_sequence=["#F18F01"],
+    f_adr = px.bar(adr, x="ADR", y="Hotel", orientation="h", color_discrete_sequence=["#434343"],
                    title="Rata-rata Sales per Room Night", text_auto=",.0f",
                    height=max(380, 30 * len(chart) + 110))
     f_adr.update_layout(yaxis_title=None, xaxis_title="Rp / room night",
@@ -1565,9 +1574,9 @@ with tab_top:
                                     "Room Night", "Invoice No"]])
         sub1, sub2 = st.tabs(["💰 Top Spender Hotel (Sales AR)", "🛏️ Top Room Night"])
         with sub1:
-            ranking_section(rank, "Sales AR", "Share Sales %", "#2E86AB", rupiah_full, "spender")
+            ranking_section(rank, "Sales AR", "Share Sales %", "#0D7FCC", rupiah_full, "spender")
         with sub2:
-            ranking_section(rank, "Room Night", "Share RN %", "#3B8B5A", angka, "roomnight")
+            ranking_section(rank, "Room Night", "Share RN %", "#1494C6", angka, "roomnight")
 
 SCORECARD_CSS = """<style>
 .sc-wrap {display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:6px 0 18px;}
@@ -1575,9 +1584,9 @@ SCORECARD_CSS = """<style>
 .sc .lbl {font-size:.85rem; opacity:.9; text-transform:uppercase; letter-spacing:.04em;}
 .sc .val {font-size:clamp(1.35rem,2.3vw,2rem); font-weight:700; margin:4px 0 2px; word-break:break-word;}
 .sc .sub {font-size:.8rem; opacity:.85;}
-.sc.rev {background:linear-gradient(135deg,#1f6f9f,#2E86AB);}
-.sc.rn  {background:linear-gradient(135deg,#2a6b45,#3B8B5A);}
-.sc.bk  {background:linear-gradient(135deg,#a8580a,#F18F01);}
+.sc.rev {background:linear-gradient(135deg,#0A6AAC,#0D7FCC);}
+.sc.rn  {background:linear-gradient(135deg,#0F7AA6,#1494C6);}
+.sc.bk  {background:linear-gradient(135deg,#2B2B2B,#434343);}
 </style>"""
 
 
@@ -1674,11 +1683,11 @@ with tab_find:
                 mm["Label"] = (mm["Bulan"].dt.month.map(lambda x: BULAN[x - 1]) + " "
                                + mm["Bulan"].dt.strftime("%y"))
                 fg = go.Figure()
-                fg.add_bar(x=mm["Label"], y=mm["Revenue"], name="Revenue", marker_color="#2E86AB")
+                fg.add_bar(x=mm["Label"], y=mm["Revenue"], name="Revenue", marker_color="#0D7FCC")
                 fg.add_scatter(x=mm["Label"], y=mm["RoomNight"], name="Room Night", yaxis="y2",
-                               mode="lines+markers", line=dict(color="#3B8B5A", width=3))
+                               mode="lines+markers", line=dict(color="#1494C6", width=3))
                 fg.add_scatter(x=mm["Label"], y=mm["Booking"], name="Booking", yaxis="y2",
-                               mode="lines+markers", line=dict(color="#F18F01", width=2, dash="dot"))
+                               mode="lines+markers", line=dict(color="#434343", width=2, dash="dot"))
                 fg.update_layout(title="Tren Bulanan: Revenue, Room Night & Booking", height=420,
                                  yaxis=dict(title="Revenue (Rp)"),
                                  yaxis2=dict(title="Room Night / Booking", overlaying="y",
