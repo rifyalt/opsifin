@@ -36,7 +36,42 @@ st.set_page_config(page_title="Merge Excel & Dashboard", page_icon="📊", layou
 st.markdown("""<style>
 [data-testid="stMetricValue"] {font-size: clamp(1.3rem, 2.4vw, 2.25rem);}
 [data-testid="stMetricValue"] > div {white-space: normal; overflow: visible; text-overflow: clip;}
+/* Tampilan dashboard: bersih & ringkas */
+.block-container {padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1400px;}
+h1 {font-size: 1.85rem !important; font-weight: 700 !important; letter-spacing: -.01em;}
+[class*="st-key-card"] {border-radius: 16px !important; padding: 14px 16px 10px !important;
+    box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 4px 14px rgba(16,24,40,.05);}
+.stTabs [data-baseweb="tab-list"] {gap: 6px;}
+.stTabs [data-baseweb="tab"] {padding: 8px 14px; border-radius: 10px 10px 0 0;}
+.sec-h {display:flex; align-items:baseline; gap:10px; margin: 6px 0 2px;}
+.sec-h .t {font-size: 1.05rem; font-weight: 700;}
+.sec-h .s {font-size: .82rem; opacity: .6;}
 </style>""", unsafe_allow_html=True)
+
+# Palet warna yang dipakai di semua grafik dashboard
+PALETTE = ["#1f6fb2", "#2a8a57", "#d9730d", "#6b4fbb", "#14808a", "#c2416b", "#7a8699"]
+
+
+def section(title: str, subtitle: str = "", box=None):
+    """Judul bagian kecil yang rapi (judul tebal + keterangan abu-abu)."""
+    (box or st).markdown(f'<div class="sec-h"><span class="t">{title}</span>'
+                         f'<span class="s">{subtitle}</span></div>', unsafe_allow_html=True)
+
+
+def clean_fig(fig, height: int = 360, legend_bottom: bool = False):
+    """Gaya grafik plotly yang bersih: latar transparan, grid tipis, tanpa judul, legenda rapi."""
+    fig.update_layout(
+        template="plotly_white", height=height, title=None,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Source Sans Pro, sans-serif", size=13),
+        margin=dict(t=10, b=10 if not legend_bottom else 40, l=10, r=10),
+        legend=(dict(orientation="h", y=-0.08, x=0.5, xanchor="center", title=None)
+                if legend_bottom else
+                dict(orientation="h", y=1.08, x=0, xanchor="left", title=None)),
+        hoverlabel=dict(font_size=12))
+    fig.update_xaxes(showgrid=False, zeroline=False)
+    fig.update_yaxes(gridcolor="rgba(128,128,128,.15)", zeroline=False)
+    return fig
 
 EXCEL_EXT = (".xlsx", ".xlsm", ".xls")
 
@@ -940,8 +975,10 @@ def unmatched_hotels() -> pd.DataFrame:
 
 
 KPI_CSS = """<style>
-.kpi-grid {display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin:4px 0 6px;}
-.kpi {position:relative; overflow:hidden; border-radius:16px; padding:18px 20px 16px;
+.kpi-grid {display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:8px 0 6px;}
+@media (max-width: 900px) {.kpi-grid {grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media (max-width: 560px) {.kpi-grid {grid-template-columns:1fr;}}
+.kpi {position:relative; overflow:hidden; border-radius:16px; padding:16px 18px 14px;
       background:var(--kpi-bg); border:1px solid var(--kpi-bd);
       box-shadow:0 1px 2px rgba(16,24,40,.04), 0 4px 14px rgba(16,24,40,.06);
       transition:transform .15s ease, box-shadow .15s ease;}
@@ -991,11 +1028,185 @@ def kpi_cards(items: list, caption: str = ""):
                 unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------------
+# Ekspor halaman Dashboard ke PDF 1 halaman (A4 portrait), dibuat dengan matplotlib
+# ---------------------------------------------------------------------------
+def _rp_short(x, _pos=None) -> str:
+    a = abs(x)
+    if a >= 1e12:
+        return f"Rp {x / 1e12:,.1f} T".replace(".", ",")
+    if a >= 1e9:
+        return f"Rp {x / 1e9:,.1f} M".replace(".", ",")
+    if a >= 1e6:
+        return f"Rp {x / 1e6:,.0f} Jt"
+    return f"Rp {x:,.0f}".replace(",", ".")
+
+
+def _cut(s, n: int = 34) -> str:
+    s = str(s)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def dashboard_pdf(dash: dict) -> bytes:
+    """Gambar ulang isi tab Dashboard (scorecard, tren, Top 10 customer, komposisi Room Night,
+    Domestic vs International) ke satu halaman PDF A4."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+    from matplotlib.ticker import FuncFormatter
+
+    INK, MUTE, LINE = "#1d2433", "#6b7385", "#e3e6ec"
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 7, "axes.edgecolor": LINE,
+                         "axes.labelcolor": MUTE, "xtick.color": MUTE, "ytick.color": MUTE})
+    fig = plt.figure(figsize=(8.27, 11.69))
+    bg = fig.add_axes([0, 0, 1, 1]); bg.axis("off"); bg.set_xlim(0, 1); bg.set_ylim(0, 1)
+    L, R = 0.045, 0.955
+
+    def sec(y, title, sub="", x=L, x_end=None):
+        """Judul bagian (kiri) + keterangan kecil rata kanan agar tidak bertumpuk."""
+        bg.text(x, y, title, fontsize=9.5, weight="bold", color=INK, va="bottom")
+        if sub:
+            bg.text(x_end if x_end is not None else R, y + 0.001, sub, fontsize=6.3,
+                    color=MUTE, va="bottom", ha="right")
+
+    # Header
+    bg.text(L, 0.968, "Dashboard Penjualan Hotel", fontsize=16, weight="bold", color=INK)
+    bg.text(L, 0.952, f"Periode Inv Date: {dash.get('periode', '-')}  ·  {dash.get('info', '')}",
+            fontsize=7.5, color=MUTE)
+    bg.text(R, 0.968, pd.Timestamp.now().strftime("Dicetak %d %b %Y %H:%M"), fontsize=7,
+            color=MUTE, ha="right")
+    bg.add_line(plt.Line2D([L, R], [0.944, 0.944], color=LINE, lw=1))
+
+    # Scorecard 3 x 2
+    kpis = dash.get("kpi", [])
+    gap, w, h = 0.014, (R - L - 2 * 0.014) / 3, 0.058
+    for i, (label, value, sub, color) in enumerate(kpis[:6]):
+        r, c = divmod(i, 3)
+        x, y = L + c * (w + gap), 0.874 - r * (h + 0.01)
+        bg.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=0.008",
+                                    fc="white", ec=LINE, lw=0.8))
+        bg.add_patch(Rectangle((x, y + 0.004), 0.004, h - 0.008, fc=color, ec="none"))
+        bg.text(x + 0.016, y + h - 0.014, label.upper(), fontsize=6.3, weight="bold", color=color)
+        bg.text(x + 0.016, y + h - 0.036, value, fontsize=12.5, weight="bold", color=INK)
+        bg.text(x + 0.016, y + 0.008, _cut(sub, 52), fontsize=6, color=MUTE)
+
+    # Tren bulanan
+    m = dash.get("trend")
+    sec(0.775, "Tren Bulanan")
+    if m is not None and len(m):
+        ax = fig.add_axes([0.10, 0.615, 0.79, 0.15])
+        ax.bar(m["Label"], m["Sales"], color=PALETTE[0], width=0.6, alpha=.9, label="Sales AR")
+        ax.yaxis.set_major_formatter(FuncFormatter(_rp_short))
+        ax.grid(axis="y", color=LINE, lw=0.6); ax.set_axisbelow(True)
+        for s_ in ("top", "right", "left"):
+            ax.spines[s_].set_visible(False)
+        ax2 = ax.twinx()
+        ax2.plot(m["Label"], m["Profit"], color=PALETTE[2], lw=2, marker="o", ms=3.5, label="Profit")
+        ax2.yaxis.set_major_formatter(FuncFormatter(_rp_short))
+        for s_ in ("top", "left", "right"):
+            ax2.spines[s_].set_visible(False)
+        ax.tick_params(length=0, labelsize=6.5); ax2.tick_params(length=0, labelsize=6.5)
+        h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
+        ax.legend(h1 + h2, l1 + l2, loc="lower right", bbox_to_anchor=(1.075, 1.03), ncol=2,
+                  frameon=False, fontsize=6.5)
+
+    # Tabel Top 10 Customer
+    def draw_table(rect, df, fmts, col_w, font=6.3):
+        ax = fig.add_axes(rect); ax.axis("off")
+        cells = [[fmts.get(c, str)(v) for c, v in zip(df.columns, row)] for row in df.itertuples(index=False)]
+        tb = ax.table(cellText=cells, colLabels=list(df.columns), colWidths=col_w,
+                      loc="upper center", cellLoc="right", colLoc="right")
+        tb.auto_set_font_size(False); tb.set_fontsize(font)
+        nrows = len(cells) + 1
+        for (r_, c_), cell in tb.get_celld().items():
+            cell.set_edgecolor(LINE); cell.set_linewidth(0.5)
+            cell.set_height(1 / max(nrows, 1))
+            if df.columns[c_] in ("Customer", "Kategori"):
+                cell._loc = "left"; cell.set_text_props(ha="left")
+            if r_ == 0:
+                cell.set_facecolor("#f3f5f8"); cell.set_text_props(weight="bold", color=MUTE)
+            else:
+                cell.set_facecolor("white" if r_ % 2 else "#fafbfc")
+        return ax
+
+    pct = lambda v: "-" if pd.isna(v) else f"{v:.2f}%".replace(".", ",")
+    num = lambda v: "-" if pd.isna(v) else angka(v)
+    dec1 = lambda v: "-" if pd.isna(v) else f"{v:.1f}".replace(".", ",")
+    for key, x0 in (("cust_sales", L), ("cust_profit", 0.515)):
+        if key not in dash:
+            continue
+        title, sub, t, cap = dash[key]
+        sec(0.565, title, sub, x=x0, x_end=x0 + 0.44)
+        t = t.copy()
+        t["Customer"] = t["Customer"].map(lambda s: _cut(s, 30))
+        t = t.rename(columns={"Rank": "#", "Avg Booking / Bulan": "Avg/Bulan"})
+        ncol = len(t.columns)
+        cw = {4: [0.06, 0.50, 0.26, 0.18], 5: [0.06, 0.44, 0.15, 0.15, 0.20]}.get(
+            ncol, [1 / ncol] * ncol)
+        draw_table([x0, 0.375, 0.44, 0.183], t,
+                   {"Sales AR": num, "Booking": num, "Share %": pct, "Avg Profit %": pct,
+                    "Avg/Bulan": dec1}, cw)
+        import textwrap
+        bg.text(x0, 0.365, "\n".join(textwrap.wrap(cap, 95)), fontsize=5.6, color=MUTE, va="top")
+
+    # Donut komposisi Room Night
+    for i, (title, comp, col_) in enumerate(dash.get("pies", [])[:2]):
+        x0 = L if i == 0 else 0.515
+        sec(0.318, title, x=x0)
+        ax = fig.add_axes([x0 - 0.01, 0.135, 0.22, 0.17])
+        vals = comp["Room Night"].clip(lower=0)
+        wedges, _t, autot = ax.pie(vals, colors=PALETTE[: len(vals)], startangle=90,
+                                   counterclock=False, autopct=lambda p: f"{p:.0f}%" if p >= 5 else "",
+                                   pctdistance=0.79, wedgeprops=dict(width=0.38, edgecolor="white",
+                                                                     linewidth=1.2))
+        for a_ in autot:
+            a_.set_color("white"); a_.set_fontsize(5.6); a_.set_weight("bold")
+        ax.text(0, 0.06, angka(vals.sum()), ha="center", fontsize=9, weight="bold", color=INK)
+        ax.text(0, -0.16, "Room Night", ha="center", fontsize=5.8, color=MUTE)
+        ax.set_aspect("equal")
+        tot = vals.sum() or 1
+        for j, (name, v) in enumerate(zip(comp[col_], vals)):
+            yy = 0.27 - j * 0.017
+            if yy < 0.14:
+                break
+            bg.add_patch(Rectangle((x0 + 0.225, yy - 0.002), 0.008, 0.008, fc=PALETTE[j % len(PALETTE)]))
+            bg.text(x0 + 0.238, yy, _cut(name, 19), fontsize=6.3, color=INK, va="bottom")
+            bg.text(x0 + 0.44, yy, f"{angka(v)}  ·  " + pct(v / tot * 100), fontsize=6.3,
+                    color=MUTE, va="bottom", ha="right")
+
+    # Domestic vs International
+    dvi = dash.get("dvi")
+    if dvi is not None and len(dvi):
+        sec(0.105, "Domestic vs International", "berdasarkan kolom Product Type")
+        dvi = dvi.copy()
+        draw_table([L, 0.035, R - L, 0.064], dvi,
+                   {"Revenue": lambda v: rupiah_full(v), "Room Night": num, "Booking": num,
+                    "Share Revenue %": pct},
+                   [0.22, 0.28, 0.16, 0.16, 0.18], font=6.5)
+
+    bg.text(L, 0.014, "Data mengikuti filter yang aktif di aplikasi saat diunduh.", fontsize=5.8,
+            color=MUTE)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="pdf")
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def file_download(box, label: str, make, file_name: str, mime: str, key: str):
+    """Tombol unduh umum; file dibuat saat tombol diklik bila Streamlit mendukung."""
+    extra = {"on_click": "ignore"} if LAZY_DL else {}
+    box.download_button(label, make if LAZY_DL else make(), file_name=file_name, mime=mime,
+                        key=key, type="primary", **extra)
+
+
 def col_sum(df, c):
     return df[c].sum() if c in df.columns else 0
 
 
 with tab_dash:
+    dash = {}  # isi dashboard, dipakai juga untuk ekspor PDF
+    pdf_box = st.container()  # tombol ekspor PDF (diisi setelah semua bagian dihitung)
     sales = col_sum(fdata, "Sales AR")
     profit = col_sum(fdata, "Profit")
     n_inv = invoice_key(fdata["Invoice No"]).nunique() if "Invoice No" in fdata else len(fdata)
@@ -1023,6 +1234,19 @@ with tab_dash:
         dict(icon="🏨", label="Jumlah Hotel", value=angka(n_hotel), tone="rose",
              sub=f"di {angka(n_city)} kota"),
     ], caption=f"Periode Inv Date: {periode}")
+    dash["periode"] = periode
+    dash["info"] = f"{angka(len(fdata))} baris transaksi"
+    dash["kpi"] = [
+        ("Total Sales AR", rupiah_full(sales),
+         f"Rata-rata {rupiah_full(sales / n_inv) if n_inv else '-'} / invoice", "#1f6fb2"),
+        ("Total Profit", rupiah_full(profit),
+         f"Rata-rata {rupiah_full(profit / n_inv) if n_inv else '-'} / invoice", "#2a8a57"),
+        ("Margin", f"{margin:.2f}%", "Total Profit ÷ Total Sales AR", "#d9730d"),
+        ("Jumlah Invoice (unik)", angka(n_inv), f"dari {angka(len(fdata))} baris transaksi", "#6b4fbb"),
+        ("Room Night", angka(rn), f"Rata-rata {rupiah_full(sales / rn) if rn else '-'} / room night",
+         "#14808a"),
+        ("Jumlah Hotel", angka(n_hotel), f"di {angka(n_city)} kota", "#c2416b"),
+    ]
 
     # Tren bulanan
     if "Bulan" in fdata.columns:
@@ -1031,15 +1255,25 @@ with tab_dash:
                   RoomNight=("Room Night", "sum"))
              .reset_index())
         m["Label"] = m["Bulan"].dt.month.map(lambda x: BULAN[x - 1]) + " " + m["Bulan"].dt.strftime("%y")
-        fig = go.Figure()
-        fig.add_bar(x=m["Label"], y=m["Sales"], name="Sales AR", marker_color="#2E86AB")
-        fig.add_scatter(x=m["Label"], y=m["Profit"], name="Profit", yaxis="y2",
-                        mode="lines+markers", line=dict(color="#F18F01", width=3))
-        fig.update_layout(title="Tren Bulanan: Sales AR & Profit", height=420,
-                          yaxis=dict(title="Sales AR (Rp)"),
-                          yaxis2=dict(title="Profit (Rp)", overlaying="y", side="right"),
-                          legend=dict(orientation="h", y=1.1), margin=dict(t=70, b=30))
-        st.plotly_chart(fig, width="stretch")
+        dash["trend"] = m
+        with st.container(border=True, key="card_trend"):
+            section("Tren Bulanan", "Sales AR (batang) & Profit (garis)")
+            fig = go.Figure()
+            fig.add_bar(x=m["Label"], y=m["Sales"], name="Sales AR", marker_color=PALETTE[0],
+                        opacity=.9, hovertemplate="Sales AR: Rp %{y:,.0f}<extra></extra>")
+            try:
+                fig.update_traces(marker_cornerradius=6, selector=dict(type="bar"))
+            except (ValueError, TypeError):  # plotly lama belum mendukung sudut membulat
+                pass
+            fig.add_scatter(x=m["Label"], y=m["Profit"], name="Profit", yaxis="y2",
+                            mode="lines+markers", line=dict(color=PALETTE[2], width=3),
+                            marker=dict(size=7), hovertemplate="Profit: Rp %{y:,.0f}<extra></extra>")
+            clean_fig(fig, 340)
+            fig.update_layout(hovermode="x unified", bargap=.35,
+                              yaxis=dict(title=None, tickprefix="Rp "),
+                              yaxis2=dict(title=None, overlaying="y", side="right", showgrid=False,
+                                          tickprefix="Rp "))
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     def top_bar(col, title, color, metric="Sales AR"):
         if col not in fdata.columns or metric not in fdata.columns:
@@ -1122,7 +1356,8 @@ with tab_dash:
             t = t.sort_values(pct_col, ascending=False, na_position="last").reset_index(drop=True)
         t.insert(0, "Rank", range(1, len(t) + 1))
         vmax = float(t[bar_col].max()) if len(t) and t[bar_col].max() > 0 else 100.0
-        box.markdown(f"**Top {top_n} Customer ({metric})**")
+        sub_txt = "diurutkan dari Avg Profit % tertinggi" if with_avg else "porsi dari total"
+        section(f"Top {top_n} Customer · {metric}", sub_txt, box=box)
         box.dataframe(
             t, hide_index=True, width="stretch", height=38 + 35 * len(t),
             column_config={
@@ -1146,20 +1381,21 @@ with tab_dash:
         if with_avg:
             per_txt = (f"{d['Inv Date'].min():%b %Y} – {d['Inv Date'].max():%b %Y}"
                        if "Inv Date" in d.columns and d["Inv Date"].notna().any() else "-")
-            box.caption(f"Periode: {per_txt} ({n_months} bulan) · "
-                        f"Top {top_n} berdasarkan total {metric} ({rupiah_full(total)}), "
-                        f"diurutkan dari Avg Profit % tertinggi · "
-                        f"rata-rata profit per booking "
-                        f"semua customer: {all_pct:.2f}%.")
+            cap = (f"Periode: {per_txt} ({n_months} bulan) · "
+                   f"Top {top_n} berdasarkan total {metric} ({rupiah_full(total)}), "
+                   f"diurutkan dari Avg Profit % tertinggi · "
+                   f"rata-rata profit per booking semua customer: {all_pct:.2f}%.")
         else:
-            box.caption(f"Top {top_n} = {t['Share %'].sum():.2f}% dari total {metric} "
-                        f"({rupiah_full(total)}).")
+            cap = (f"Top {top_n} = {t['Share %'].sum():.2f}% dari total {metric} "
+                   f"({rupiah_full(total)}).")
+        box.caption(cap)
+        dash[key] = (f"Top {top_n} Customer · {metric}", sub_txt, t.copy(), cap)
 
-    st.markdown("#### 💰 Analisa Sales AR")
     t1, t2 = st.columns(2)
-    customer_share_table(t1, "Sales AR", "cust_sales")
-    customer_share_table(t2, "Profit", "cust_profit", with_avg=True)
-    st.divider()
+    with t1.container(border=True, key="card_cust_sales"):
+        customer_share_table(st, "Sales AR", "cust_sales")
+    with t2.container(border=True, key="card_cust_profit"):
+        customer_share_table(st, "Profit", "cust_profit", with_avg=True)
 
     # Komposisi berdasarkan Room Night (Room × Night); Sales AR tetap tampil saat hover
     c3, c4 = st.columns(2)
@@ -1168,14 +1404,25 @@ with tab_dash:
         if col_ in fdata.columns and "Room Night" in fdata.columns:
             comp = (fdata.groupby(col_)
                     .agg(**{"Room Night": ("Room Night", "sum"), "Sales AR": ("Sales AR", "sum")})
-                    .reset_index())
-            fig_ = px.pie(comp, names=col_, values="Room Night", hole=0.5,
+                    .reset_index().sort_values("Room Night", ascending=False))
+            fig_ = px.pie(comp, names=col_, values="Room Night", hole=0.62,
                           hover_data={"Sales AR": ":,.0f"},
-                          title=f"Komposisi Room Night per {label_}")
-            fig_.update_traces(hovertemplate="<b>%{label}</b><br>Room Night: %{value:,.0f}"
-                                             " (%{percent})<br>Sales AR: %{customdata[0]:,.0f}"
+                          color_discrete_sequence=PALETTE)
+            fig_.update_traces(sort=False, textinfo="percent", textfont_size=12,
+                               marker=dict(line=dict(color="rgba(255,255,255,.9)", width=2)),
+                               hovertemplate="<b>%{label}</b><br>Room Night: %{value:,.0f}"
+                                             " (%{percent})<br>Sales AR: Rp %{customdata[0]:,.0f}"
                                              "<extra></extra>")
-            box_.plotly_chart(fig_, width="stretch", key=f"pie_rn_{col_}")
+            clean_fig(fig_, 330, legend_bottom=True)
+            fig_.add_annotation(text=f"<b>{angka(comp['Room Night'].sum())}</b><br>"
+                                     "<span style='font-size:11px'>Room Night</span>",
+                                showarrow=False, font=dict(size=18))
+            dash.setdefault("pies", []).append(
+                (f"Room Night per {label_}", comp[[col_, "Room Night"]].copy(), col_))
+            with box_.container(border=True, key=f"card_pie_{col_}"):
+                section(f"Room Night per {label_}", "komposisi Room × Night")
+                st.plotly_chart(fig_, width="stretch", key=f"pie_rn_{col_}",
+                                config={"displayModeBar": False})
 
     # Domestic vs International (dari kolom Product Type), ditaruh setelah pie chart
     if "Product Type" in fdata.columns:
@@ -1188,15 +1435,26 @@ with tab_dash:
         if len(dvi):
             dvi["Share Revenue %"] = dvi["Revenue"] / dvi["Revenue"].sum() * 100
             dvi["Revenue"] = round_money(dvi["Revenue"].astype(float))
-            st.markdown("**Domestic vs International**")
-            st.dataframe(dvi.reset_index().rename(columns={"_m": "Kategori"}),
-                         hide_index=True, width="stretch",
-                         column_config={
-                             "Revenue": st.column_config.NumberColumn(format="localized"),
-                             "Room Night": st.column_config.NumberColumn(format="localized"),
-                             "Booking": st.column_config.NumberColumn(format="localized"),
-                             "Share Revenue %": st.column_config.ProgressColumn(
-                                 format="%.1f%%", min_value=0, max_value=100)})
+            dash["dvi"] = dvi.reset_index().rename(columns={"_m": "Kategori"})
+            with st.container(border=True, key="card_dvi"):
+                section("Domestic vs International", "berdasarkan kolom Product Type")
+                st.dataframe(dvi.reset_index().rename(columns={"_m": "Kategori"}),
+                             hide_index=True, width="stretch",
+                             column_config={
+                                 "Revenue": st.column_config.NumberColumn(format="localized"),
+                                 "Room Night": st.column_config.NumberColumn(format="localized"),
+                                 "Booking": st.column_config.NumberColumn(format="localized"),
+                                 "Share Revenue %": st.column_config.ProgressColumn(
+                                     format="%.1f%%", min_value=0, max_value=100)})
+
+    # Tombol ekspor PDF ditaruh di bagian atas dashboard
+    with pdf_box:
+        _e1, _e2 = st.columns([3, 1])
+        _e1.caption("Ringkasan halaman ini bisa diunduh sebagai PDF satu halaman (A4).")
+        _per = re.sub(r"[^A-Za-z0-9]+", "_", dash.get("periode", ""))[:40].strip("_")
+        file_download(_e2, "⬇️ Export PDF (1 halaman)", lambda d=dash: dashboard_pdf(d),
+                      f"dashboard_penjualan_{_per or 'hotel'}.pdf", "application/pdf",
+                      "dl_dash_pdf")
 
 @st.cache_data(show_spinner=False)
 def hotel_ranking(df: pd.DataFrame) -> pd.DataFrame:
