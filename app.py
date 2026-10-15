@@ -1387,11 +1387,11 @@ def hotel_pdf(fx: dict) -> bytes:
     return buf.getvalue()
 
 
-def file_download(box, label: str, make, file_name: str, mime: str, key: str):
+def file_download(box, label: str, make, file_name: str, mime: str, key: str, **kw):
     """Tombol unduh umum; file dibuat saat tombol diklik bila Streamlit mendukung."""
     extra = {"on_click": "ignore"} if LAZY_DL else {}
     box.download_button(label, make if LAZY_DL else make(), file_name=file_name, mime=mime,
-                        key=key, type="primary", **extra)
+                        key=key, type="primary", **extra, **kw)
 
 
 def col_sum(df, c):
@@ -1650,12 +1650,12 @@ with tab_dash:
 
     # Tombol ekspor PDF ditaruh di bagian atas dashboard
     with pdf_box:
-        _e1, _e2 = st.columns([3, 1])
+        _e1, _e2 = st.columns([5, 1], vertical_alignment="center")
         _e1.caption("Ringkasan halaman ini bisa diunduh sebagai PDF satu halaman (A4).")
         _per = re.sub(r"[^A-Za-z0-9]+", "_", dash.get("periode", ""))[:40].strip("_")
-        file_download(_e2, "⬇️ Export PDF (1 halaman)", lambda d=dash: dashboard_pdf(d),
+        file_download(_e2, "⬇️ Export PDF", lambda d=dash: dashboard_pdf(d),
                       f"dashboard_penjualan_{_per or 'hotel'}.pdf", "application/pdf",
-                      "dl_dash_pdf")
+                      "dl_dash_pdf", width="stretch")
 
 # Warna tetap per supplier (dipakai di grafik perbandingan Room Night antar supplier)
 SUPPLIER_COLORS = {
@@ -2004,13 +2004,13 @@ with tab_find:
         fx["supplier"] = st.session_state.get("find_supplier")
         fx["hotels"] = list(st.session_state.get("find_hotel") or [])
         with find_pdf_box:
-            _p1, _p2 = st.columns([3, 1])
+            _p1, _p2 = st.columns([5, 1], vertical_alignment="center")
             _p1.caption("Ringkasan tab ini (sesuai filter & supplier yang dipilih) bisa diunduh "
                         "sebagai PDF satu halaman (A4).")
             _per = re.sub(r"[^A-Za-z0-9]+", "_", fx.get("periode", ""))[:40].strip("_")
-            file_download(_p2, "⬇️ Export PDF (1 halaman)", lambda f=dict(fx): hotel_pdf(f),
+            file_download(_p2, "⬇️ Export PDF", lambda f=dict(fx): hotel_pdf(f),
                           f"ringkasan_hotel_{_per or 'periode'}.pdf", "application/pdf",
-                          "dl_find_pdf")
+                          "dl_find_pdf", width="stretch")
 
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
