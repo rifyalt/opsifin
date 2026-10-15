@@ -118,6 +118,24 @@ SUPPLIER_CATEGORY_RULES = {
 }
 SUPPLIER_DEFAULT_CATEGORY = "Direct To Hotel"
 
+# Penulisan baku (Proper) untuk supplier di daftar kategori. Dicocokkan tanpa membedakan
+# huruf besar/kecil, spasi & tanda baca (EXPEDIA / Expedia / expedia -> "Expedia").
+# Supplier lain otomatis ditulis Proper (mis. "HOTEL MULIA" -> "Hotel Mulia").
+SUPPLIER_STANDARD_NAMES = {
+    "EXPEDIA": "Expedia",
+    "FIT RUUMS": "Fit Ruums",
+    "Destination Of The World": "Destination Of The World",
+    "MG HOLIDAY": "MG Holiday",
+    "Channel Manager": "Channel Manager",
+    "KLIKNBOOK": "Kliknbook",
+    "TIKET.COM": "Tiket.com",
+    "TRIP.COM": "Trip.com",
+    "Agoda": "Agoda",
+    "TBO Holidays": "TBO Holidays",
+    "Traveloka": "Traveloka",
+    "Webbeds": "Webbeds",
+}
+
 
 def _compact(s: str) -> str:
     """Huruf kecil, tanpa spasi & tanda baca: 'TIKET.COM' -> 'tiketcom'."""
@@ -883,7 +901,7 @@ def customer_norm(sr: pd.Series) -> pd.Series:
 
 
 # Singkatan yang tetap huruf besar setelah dibuat Proper
-PROPER_KEEP_UPPER = ["PT", "CV", "CBT", "BUMN", "PLN", "PGN", "KAI", "BRI", "BNI", "BCA", "BTN",
+PROPER_KEEP_UPPER = ["PT", "CV", "CBT", "MG", "TBO", "BUMN", "PLN", "PGN", "KAI", "BRI", "BNI", "BCA", "BTN",
                      "BPJS", "SKK", "LNG", "UD", "TNI", "POLRI", "RI", "II", "III", "IV"]
 
 
@@ -928,10 +946,24 @@ if inv_to_col and INVOICE_TO_RULES:
 # ---------------------------------------------------------------------------
 # Kategori Supplier (otomatis dari Supplier Name, tidak peka huruf besar/kecil)
 # ---------------------------------------------------------------------------
+def standard_supplier(sr: pd.Series) -> pd.Series:
+    """Supplier Name baku: nama di SUPPLIER_STANDARD_NAMES -> penulisan baku, lainnya Proper."""
+    std = {_compact(k): v for k, v in SUPPLIER_STANDARD_NAMES.items()}
+    mapped = sr.astype(str).map(_compact).map(std)
+    out = mapped.fillna(proper_case(sr))
+    # domain seperti 'Xxx.Com' tetap ditulis '.com'
+    out = out.astype("string").str.replace(r"\.(Com|Co\.Id|Id|Net)\b",
+                                           lambda m: m.group(0).lower(), regex=True)
+    return out.astype(object).where(sr.notna(), sr)
+
+
 if "Supplier Name" in data.columns:
-    data = data.drop(columns=["Supplier Category"], errors="ignore")
+    data = data.drop(columns=["Supplier Category", "Supplier Name (Asli)"], errors="ignore")
+    _sup_orig = data["Supplier Name"]
+    data = data.assign(**{"Supplier Name": standard_supplier(_sup_orig)})
     pos_ = data.columns.get_loc("Supplier Name") + 1
     data.insert(pos_, "Supplier Category", supplier_category(data["Supplier Name"]))
+    data.insert(pos_ + 1, "Supplier Name (Asli)", _sup_orig)
 
 # ---------------------------------------------------------------------------
 # SIDEBAR: filter
