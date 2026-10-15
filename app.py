@@ -52,6 +52,45 @@ BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "
 
 
 # ---------------------------------------------------------------------------
+# Kategori Supplier
+#   Nama supplier dicocokkan tanpa membedakan huruf besar/kecil, spasi & tanda baca
+#   (mis. 'TIKET.COM', 'Tiket.com', 'tiket com' -> OTA). Pencocokan berbasis "mengandung",
+#   jadi 'EXPEDIA GROUP' atau 'Webbeds FZ LLC' juga ikut terbaca.
+#   Supplier yang tidak ada di daftar -> 'Direct To Hotel'.
+# ---------------------------------------------------------------------------
+SUPPLIER_CATEGORY_RULES = {
+    "EXPEDIA": "Wholesaler",
+    "FIT RUUMS": "Wholesaler",
+    "Destination Of The World": "Wholesaler",
+    "MG HOLIDAY": "Wholesaler",
+    "Channel Manager": "PERTAMINA Corp Rate",
+    "KLIKNBOOK": "Wholesaler",
+    "TIKET.COM": "OTA",
+    "TRIP.COM": "OTA",
+    "Agoda": "OTA",
+    "TBO Holidays": "Wholesaler",
+    "Traveloka": "OTA",
+    "Webbeds": "Wholesaler",
+}
+SUPPLIER_DEFAULT_CATEGORY = "Direct To Hotel"
+
+
+def _compact(s: str) -> str:
+    """Huruf kecil, tanpa spasi & tanda baca: 'TIKET.COM' -> 'tiketcom'."""
+    return re.sub(r"[^a-z0-9]+", "", html.unescape(str(s)).lower())
+
+
+def supplier_category(sr: pd.Series) -> pd.Series:
+    """Petakan Supplier Name ke kategori (Wholesaler / OTA / PERTAMINA Corp Rate /
+    Direct To Hotel). Tidak peka huruf besar/kecil."""
+    key = sr.astype(str).map(_compact)
+    out = pd.Series(SUPPLIER_DEFAULT_CATEGORY, index=sr.index, dtype=object)
+    for name, cat in SUPPLIER_CATEGORY_RULES.items():
+        out[key.str.contains(_compact(name), regex=False)] = cat
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Standarisasi nama hotel dari file master (kolom STADARD NAME)
 #   File master default: unique_hotels.xlsx di folder yang sama dengan app.py,
 #   atau di-upload lewat sidebar. Sheet dipilih otomatis: sheet pertama yang
@@ -67,7 +106,7 @@ STD_COL_CANDIDATES = ["STADARD NAME", "STANDARD NAME"]
 
 def _clean_hotel(sr: pd.Series) -> pd.Series:
     return (sr.astype(str).map(html.unescape)
-            .str.replace(" ", " ").str.replace(r"\s+", " ", regex=True).str.strip())
+            .str.replace("\u00a0", " ").str.replace(r"\s+", " ", regex=True).str.strip())
 
 
 def read_hotel_master(source) -> pd.DataFrame:
@@ -766,6 +805,7 @@ elif has_hotel:
 # ---------------------------------------------------------------------------
 DEFAULT_CUSTOMER_RULES = [
     {"Nama Customer Asli": "CBT PERTAMINA (HOTEL)", "Digabung Menjadi": "CBT PERTAMINA"},
+    {"Nama Customer Asli": "PERTAMINA ENERGY TERMINAL (CBT)", "Digabung Menjadi": "CBT PERTAMINA"},
 ]
 
 
@@ -783,7 +823,8 @@ if "Customer Name" in data.columns:
                                      "kolom kanan, dan yang ditampilkan hanya nama di kolom kanan.")
     if "customer_rules" not in st.session_state:
         st.session_state["customer_rules"] = pd.DataFrame(DEFAULT_CUSTOMER_RULES)
-    cust_opts = sorted(data["Customer Name"].dropna().astype(str).unique())
+    cust_opts = sorted(set(data["Customer Name"].dropna().astype(str).unique())
+                       | {r["Nama Customer Asli"] for r in DEFAULT_CUSTOMER_RULES})
     rules = cx.data_editor(
         st.session_state["customer_rules"], num_rows="dynamic", hide_index=True,
         width="stretch", key="customer_rules_editor", disabled=not cust_on,
@@ -809,6 +850,14 @@ if "Customer Name" in data.columns:
                                   "Customer Name (Asli)": orig})
             cx.caption(f"{angka(n_rows)} baris digabung ke {len(set(rule_map.values()))} "
                                f"customer.")
+
+# ---------------------------------------------------------------------------
+# Kategori Supplier (otomatis dari Supplier Name, tidak peka huruf besar/kecil)
+# ---------------------------------------------------------------------------
+if "Supplier Name" in data.columns:
+    data = data.drop(columns=["Supplier Category"], errors="ignore")
+    pos_ = data.columns.get_loc("Supplier Name") + 1
+    data.insert(pos_, "Supplier Category", supplier_category(data["Supplier Name"]))
 
 # ---------------------------------------------------------------------------
 # SIDEBAR: filter
@@ -841,6 +890,7 @@ def multi_filter(df: pd.DataFrame, col: str, label: str, box=st.sidebar,
 fdata = multi_filter(fdata, "Source File", "Source File")
 fdata = multi_filter(fdata, "Branch", "Branch")
 fdata = multi_filter(fdata, "Customer Name", "Customer")
+fdata = multi_filter(fdata, "Supplier Category", "Kategori Supplier")
 fdata = multi_filter(fdata, "Hotel City", "Kota Hotel")
 top_n = st.sidebar.slider("Top N pada grafik", 5, 30, 10)
 
@@ -996,10 +1046,13 @@ with tab_dash:
         st.divider()
 
     c3, c4 = st.columns(2)
-    if "Branch" in fdata.columns:
-        b = fdata.groupby("Branch")["Sales AR"].sum().reset_index()
-        c3.plotly_chart(px.pie(b, names="Branch", values="Sales AR", hole=0.5,
-                               title="Komposisi Sales per Branch"), width="stretch")
+    if "Supplier Category" in fdata.columns:
+        sc_ = (fdata.groupby("Supplier Category")
+               .agg(**{"Sales AR": ("Sales AR", "sum"), "Room Night": ("Room Night", "sum")})
+               .reset_index())
+        c3.plotly_chart(px.pie(sc_, names="Supplier Category", values="Sales AR", hole=0.5,
+                               hover_data={"Room Night": ":,.0f"},
+                               title="Komposisi Sales per Kategori Supplier"), width="stretch")
     if "Product Type" in fdata.columns:
         p = fdata.groupby("Product Type")["Sales AR"].sum().reset_index()
         c4.plotly_chart(px.pie(p, names="Product Type", values="Sales AR", hole=0.5,
