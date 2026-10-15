@@ -941,7 +941,7 @@ if fdata.empty:
 # Tabs
 # ---------------------------------------------------------------------------
 tab_dash, tab_top, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
-    ["📈 Dashboard", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
+    ["📈 Overview", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
      "📁 Ringkasan File"])
 
 
