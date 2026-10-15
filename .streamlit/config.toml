@@ -1,1 +1,7 @@
-
+# Tema warna aplikasi (taruh folder .streamlit ini di folder yang sama dengan app.py)
+[theme]
+base = "light"
+primaryColor = "#0D7FCC"            # Pantone 299 2X  - tombol, tab aktif, bar progres di tabel
+textColor = "#434343"               # Pantone 446     - teks
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F1F8FD" # turunan terang #1BA0E2 - sidebar & latar input
