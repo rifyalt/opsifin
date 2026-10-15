@@ -852,6 +852,26 @@ if "Customer Name" in data.columns:
                                f"customer.")
 
 # ---------------------------------------------------------------------------
+# Merge kolom Invoice To (otomatis, tidak peka huruf besar/kecil & spasi)
+#   Nama asli tetap disimpan di kolom 'Invoice To (Asli)'.
+# ---------------------------------------------------------------------------
+INVOICE_TO_RULES = {
+    "CBT PERTAMINA (HOTEL)": "CBT PERTAMINA",
+}
+inv_to_col = next((c for c in data.columns
+                   if re.sub(r"\s+", " ", str(c)).strip().lower() == "invoice to"), None)
+if inv_to_col and INVOICE_TO_RULES:
+    inv_map = dict(zip(customer_norm(pd.Series(list(INVOICE_TO_RULES))),
+                       INVOICE_TO_RULES.values()))
+    orig = data[inv_to_col]
+    mapped = customer_norm(orig).map(inv_map)
+    data = data.drop(columns=[f"{inv_to_col} (Asli)"], errors="ignore").copy()
+    data[inv_to_col] = mapped.fillna(orig)
+    data.insert(data.columns.get_loc(inv_to_col) + 1, f"{inv_to_col} (Asli)", orig)
+    cx.caption(f"Invoice To: {angka(int(mapped.notna().sum()))} baris "
+               "'CBT PERTAMINA (HOTEL)' digabung ke 'CBT PERTAMINA'.")
+
+# ---------------------------------------------------------------------------
 # Kategori Supplier (otomatis dari Supplier Name, tidak peka huruf besar/kecil)
 # ---------------------------------------------------------------------------
 if "Supplier Name" in data.columns:
@@ -902,7 +922,7 @@ if fdata.empty:
 # Tabs
 # ---------------------------------------------------------------------------
 tab_dash, tab_top, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
-    ["📈 Overview", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
+    ["📈 Dashboard", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
      "📁 Ringkasan File"])
 
 
