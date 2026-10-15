@@ -1002,28 +1002,38 @@ with tab_dash:
                 col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}_{m_}")
 
     def customer_share_table(box, metric: str, key: str, with_avg: bool = False):
-        """Tabel Top N Customer berdasarkan metric + kolom Share % (porsi dari total semua customer)."""
+        """Tabel Top N Customer berdasarkan metric.
+        with_avg=False: kolom Share % = porsi dari total semua customer.
+        with_avg=True : kolom Avg / Booking (Rp) + Avg Profit % = rata-rata margin
+                        (Profit ÷ Sales AR) dari setiap booking (Invoice No unik) customer."""
         if "Customer Name" not in fdata.columns or metric not in fdata.columns:
             return
         d = fdata[fdata["Customer Name"].astype(str).str.strip().ne("-")]
-        g = d.groupby(d["Customer Name"].astype(str).str.strip())
-        agg = g[metric].sum().rename_axis("Customer").to_frame()
-        avg_col = f"Avg {metric} / Booking"
-        if with_avg:  # rata-rata per booking (Invoice No unik); tanpa Invoice No -> per baris
-            if "Invoice No" in d.columns:
-                bk = d.assign(_inv=invoice_key(d["Invoice No"])).groupby(
-                    d["Customer Name"].astype(str).str.strip())["_inv"].nunique()
-            else:
-                bk = g.size()
-            agg[avg_col] = agg[metric] / bk.reindex(agg.index).where(lambda x: x > 0)
+        d = d.assign(_cust=d["Customer Name"].astype(str).str.strip(),
+                     _inv=(invoice_key(d["Invoice No"]) if "Invoice No" in d.columns
+                           else pd.Series(d.index.astype(str), index=d.index)))
+        agg = d.groupby("_cust")[metric].sum().rename_axis("Customer").to_frame()
         total = agg[metric].sum()
-        agg["Share %"] = agg[metric] / total * 100 if total else 0.0
+        avg_col, pct_col = f"Avg {metric} / Booking", "Avg Profit %"
+        if with_avg and "Sales AR" in d.columns:
+            # 1 baris per booking: jumlahkan Profit & Sales AR per Invoice No
+            bk = (d.dropna(subset=["_inv"]).groupby(["_cust", "_inv"])[["Profit", "Sales AR"]].sum())
+            bk["pct"] = bk["Profit"] / bk["Sales AR"].where(bk["Sales AR"] != 0) * 100
+            per_c = bk.groupby(level=0).agg(n=("Profit", "size"), pct=("pct", "mean"))
+            agg[avg_col] = agg[metric] / per_c["n"].reindex(agg.index).where(lambda x: x > 0)
+            agg[pct_col] = per_c["pct"].reindex(agg.index)
+            all_pct = bk["pct"].mean()
+        else:
+            with_avg = False
+            agg["Share %"] = agg[metric] / total * 100 if total else 0.0
         t = agg.nlargest(top_n, metric).reset_index()
         t[metric] = round_money(t[metric].astype(float))
+        bar_col = pct_col if with_avg else "Share %"
         if with_avg:
             t[avg_col] = round_money(t[avg_col].astype(float))
-            t = t[["Customer", metric, avg_col, "Share %"]]
+            t = t[["Customer", metric, avg_col, pct_col]]
         t.insert(0, "Rank", range(1, len(t) + 1))
+        vmax = float(t[bar_col].max()) if len(t) and t[bar_col].max() > 0 else 100.0
         box.markdown(f"**Top {top_n} Customer ({metric})**")
         box.dataframe(
             t, hide_index=True, width="stretch", height=38 + 35 * len(t),
@@ -1034,12 +1044,19 @@ with tab_dash:
                 avg_col: st.column_config.NumberColumn(
                     "Avg / Booking", format="localized", width="small",
                     help=f"Rata-rata {metric} per booking = total {metric} ÷ jumlah Invoice No. unik"),
+                pct_col: st.column_config.ProgressColumn(
+                    "Avg Profit %", format="%.2f%%", min_value=0, max_value=vmax, width="small",
+                    help="Rata-rata margin per booking: (Profit ÷ Sales AR) tiap Invoice No., "
+                         "lalu dirata-rata per customer"),
                 "Share %": st.column_config.ProgressColumn(
-                    "Share %", format="%.2f%%", min_value=0, width="small",
-                    max_value=float(t["Share %"].max()) if len(t) and t["Share %"].max() > 0 else 100.0),
+                    "Share %", format="%.2f%%", min_value=0, max_value=vmax, width="small"),
             })
-        box.caption(f"Top {top_n} = {t['Share %'].sum():.2f}% dari total {metric} "
-                    f"({rupiah_full(total)}).")
+        if with_avg:
+            box.caption(f"Total {metric}: {rupiah_full(total)} · rata-rata profit per booking "
+                        f"semua customer: {all_pct:.2f}%.")
+        else:
+            box.caption(f"Top {top_n} = {t['Share %'].sum():.2f}% dari total {metric} "
+                        f"({rupiah_full(total)}).")
 
     st.markdown("#### 💰 Analisa Sales AR")
     t1, t2 = st.columns(2)
