@@ -1001,17 +1001,28 @@ with tab_dash:
             if fig is not None:
                 col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}_{m_}")
 
-    def customer_share_table(box, metric: str, key: str):
+    def customer_share_table(box, metric: str, key: str, with_avg: bool = False):
         """Tabel Top N Customer berdasarkan metric + kolom Share % (porsi dari total semua customer)."""
         if "Customer Name" not in fdata.columns or metric not in fdata.columns:
             return
         d = fdata[fdata["Customer Name"].astype(str).str.strip().ne("-")]
-        agg = (d.groupby(d["Customer Name"].astype(str).str.strip())[metric].sum()
-               .rename_axis("Customer").to_frame())
+        g = d.groupby(d["Customer Name"].astype(str).str.strip())
+        agg = g[metric].sum().rename_axis("Customer").to_frame()
+        avg_col = f"Avg {metric} / Booking"
+        if with_avg:  # rata-rata per booking (Invoice No unik); tanpa Invoice No -> per baris
+            if "Invoice No" in d.columns:
+                bk = d.assign(_inv=invoice_key(d["Invoice No"])).groupby(
+                    d["Customer Name"].astype(str).str.strip())["_inv"].nunique()
+            else:
+                bk = g.size()
+            agg[avg_col] = agg[metric] / bk.reindex(agg.index).where(lambda x: x > 0)
         total = agg[metric].sum()
         agg["Share %"] = agg[metric] / total * 100 if total else 0.0
         t = agg.nlargest(top_n, metric).reset_index()
         t[metric] = round_money(t[metric].astype(float))
+        if with_avg:
+            t[avg_col] = round_money(t[avg_col].astype(float))
+            t = t[["Customer", metric, avg_col, "Share %"]]
         t.insert(0, "Rank", range(1, len(t) + 1))
         box.markdown(f"**Top {top_n} Customer ({metric})**")
         box.dataframe(
@@ -1020,6 +1031,9 @@ with tab_dash:
                 "Rank": st.column_config.NumberColumn("#", width=40),
                 "Customer": st.column_config.TextColumn(width="medium"),
                 metric: st.column_config.NumberColumn(format="localized", width="small"),
+                avg_col: st.column_config.NumberColumn(
+                    "Avg / Booking", format="localized", width="small",
+                    help=f"Rata-rata {metric} per booking = total {metric} ÷ jumlah Invoice No. unik"),
                 "Share %": st.column_config.ProgressColumn(
                     "Share %", format="%.2f%%", min_value=0, width="small",
                     max_value=float(t["Share %"].max()) if len(t) and t["Share %"].max() > 0 else 100.0),
@@ -1030,7 +1044,7 @@ with tab_dash:
     st.markdown("#### 💰 Analisa Sales AR")
     t1, t2 = st.columns(2)
     customer_share_table(t1, "Sales AR", "cust_sales")
-    customer_share_table(t2, "Profit", "cust_profit")
+    customer_share_table(t2, "Profit", "cust_profit", with_avg=True)
     c1, c2 = st.columns(2)
     for col_box, (col, name, color) in zip(
             [c1, c2], [("Hotel City", "Kota", "#3B8B5A"), ("Supplier Name", "Supplier", "#C73E1D")]):
