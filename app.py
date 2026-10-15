@@ -786,6 +786,28 @@ if std_on:
             "lihat daftarnya di tab **Grup Hotel**.")
 
 # ---------------------------------------------------------------------------
+# Penyeragaman penulisan nama (otomatis) untuk Supplier Name & Hotel Name
+#   Pola regex (tidak peka huruf besar/kecil) -> penulisan baku. Tambahkan baris
+#   baru di NAME_FIXES bila ada merek lain yang perlu diseragamkan.
+# ---------------------------------------------------------------------------
+NAME_FIXES = {
+    r"m(?:o|ö|oe|ø)venpick": "Mövenpick",   # Movenpick, MOVENPICK, Moevenpick -> Mövenpick
+}
+NAME_FIX_COLS = ["Supplier Name", "Hotel Name"]
+
+
+def fix_names(sr: pd.Series) -> pd.Series:
+    out = sr.astype("string")
+    for pat, repl in NAME_FIXES.items():
+        out = out.str.replace(rf"\b{pat}\b", repl, regex=True, flags=re.IGNORECASE)
+    return out.astype(object).where(sr.notna(), sr)
+
+
+_fix_cols = [c for c in NAME_FIX_COLS if c in data.columns]
+if _fix_cols:
+    data = data.assign(**{c: fix_names(data[c]) for c in _fix_cols})
+
+# ---------------------------------------------------------------------------
 # SIDEBAR: merge hotel mirip (fuzzy)
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner="Mengelompokkan nama hotel yang mirip...")
