@@ -914,6 +914,18 @@ tab_dash, tab_top, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
      "📁 Ringkasan File"])
 
 
+def market_type(sr: pd.Series) -> pd.Series:
+    """Kelompokkan nilai Product Type menjadi Domestic / International / Lainnya
+    berdasarkan kata kunci (tidak peka huruf besar/kecil), mis.
+    'Hotel Domestic', 'HOTEL DOM' -> Domestic; 'Hotel International', 'Hotel Intl' -> International."""
+    s = sr.astype(str).str.lower()
+    out = pd.Series("Lainnya", index=sr.index)
+    out[s.str.contains(r"\bdom|domestic|domestik|lokal|local", regex=True, na=False)] = "Domestic"
+    out[s.str.contains(r"\bint\b|\bintl|inter|internasional|overseas|luar negeri", regex=True,
+                       na=False)] = "International"
+    return out
+
+
 def unmatched_hotels() -> pd.DataFrame:
     """Nama hotel asli yang tidak ditemukan di master, beserta jumlah transaksinya."""
     if std_table is None:
@@ -1101,6 +1113,27 @@ with tab_dash:
                                              "<extra></extra>")
             box_.plotly_chart(fig_, width="stretch", key=f"pie_rn_{col_}")
 
+    # Domestic vs International (dari kolom Product Type), ditaruh setelah pie chart
+    if "Product Type" in fdata.columns:
+        inv_all = (invoice_key(fdata["Invoice No"]) if "Invoice No" in fdata.columns
+                   else pd.Series(fdata.index.astype(str), index=fdata.index))
+        dvi = (fdata.assign(_m=market_type(fdata["Product Type"]).values, _inv=inv_all.values)
+               .groupby("_m").agg(Revenue=("Sales AR", "sum"),
+                                  **{"Room Night": ("Room Night", "sum"),
+                                     "Booking": ("_inv", "nunique")}))
+        if len(dvi):
+            dvi["Share Revenue %"] = dvi["Revenue"] / dvi["Revenue"].sum() * 100
+            dvi["Revenue"] = round_money(dvi["Revenue"].astype(float))
+            st.markdown("**Domestic vs International**")
+            st.dataframe(dvi.reset_index().rename(columns={"_m": "Kategori"}),
+                         hide_index=True, width="stretch",
+                         column_config={
+                             "Revenue": st.column_config.NumberColumn(format="localized"),
+                             "Room Night": st.column_config.NumberColumn(format="localized"),
+                             "Booking": st.column_config.NumberColumn(format="localized"),
+                             "Share Revenue %": st.column_config.ProgressColumn(
+                                 format="%.1f%%", min_value=0, max_value=100)})
+
 @st.cache_data(show_spinner=False)
 def hotel_ranking(df: pd.DataFrame) -> pd.DataFrame:
     """Ringkasan per hotel (grup): Sales AR, Profit, Room Night, invoice, ADR, kota utama."""
@@ -1219,18 +1252,6 @@ SCORECARD_CSS = """<style>
 </style>"""
 
 
-def market_type(sr: pd.Series) -> pd.Series:
-    """Kelompokkan nilai Product Type menjadi Domestic / International / Lainnya
-    berdasarkan kata kunci (tidak peka huruf besar/kecil), mis.
-    'Hotel Domestic', 'HOTEL DOM' -> Domestic; 'Hotel International', 'Hotel Intl' -> International."""
-    s = sr.astype(str).str.lower()
-    out = pd.Series("Lainnya", index=sr.index)
-    out[s.str.contains(r"\bdom|domestic|domestik|lokal|local", regex=True, na=False)] = "Domestic"
-    out[s.str.contains(r"\bint\b|\bintl|inter|internasional|overseas|luar negeri", regex=True,
-                       na=False)] = "International"
-    return out
-
-
 def scorecards(revenue: float, room_night: float, booking: int, n_rows: int):
     adr = rupiah_full(revenue / room_night) if room_night else "-"
     per_bk = rupiah_full(revenue / booking) if booking else "-"
@@ -1299,17 +1320,8 @@ with tab_find:
                         .groupby("_m").agg(Revenue=("Sales AR", "sum"),
                                            **{"Room Night": ("Room Night", "sum"),
                                               "Booking": ("_inv", "nunique")}))
-                if len(cmp_) > 1:
+                if len(cmp_) > 1:  # tabelnya ditampilkan di tab Dashboard; di sini untuk ekspor Excel
                     cmp_["Share Revenue %"] = cmp_["Revenue"] / cmp_["Revenue"].sum() * 100
-                    st.markdown("**Domestic vs International**")
-                    st.dataframe(cmp_.reset_index().rename(columns={"_m": "Kategori"}),
-                                 hide_index=True, width="stretch",
-                                 column_config={
-                                     "Revenue": st.column_config.NumberColumn(format="localized"),
-                                     "Room Night": st.column_config.NumberColumn(format="localized"),
-                                     "Booking": st.column_config.NumberColumn(format="localized"),
-                                     "Share Revenue %": st.column_config.ProgressColumn(
-                                         format="%.1f%%", min_value=0, max_value=100)})
 
             # Info hotel (kota, chain, rating) bila hanya 1 hotel dipilih
             if len(sel_h) == 1:
