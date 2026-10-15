@@ -1311,16 +1311,20 @@ with tab_dash:
             if fig is not None:
                 col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}_{m_}")
 
-    def customer_share_table(box, metric: str, key: str, with_avg: bool = False):
+    def customer_share_table(box, metric: str, key: str, with_avg: bool = False,
+                             name_col: str = "Customer Name"):
         """Tabel Top N Customer berdasarkan metric.
         with_avg=False: kolom Share % = porsi dari total semua customer.
         with_avg=True : kolom Booking (Invoice No unik), Avg Booking / Bulan (Booking ÷ jumlah
                         bulan periode) + Avg Profit % = rata-rata margin (Profit ÷ Sales AR)
                         dari setiap booking customer."""
-        if "Customer Name" not in fdata.columns or metric not in fdata.columns:
+        if name_col not in fdata.columns or metric not in fdata.columns:
             return
-        d = fdata[fdata["Customer Name"].astype(str).str.strip().ne("-")]
-        d = d.assign(_cust=d["Customer Name"].astype(str).str.strip(),
+        d = fdata[fdata[name_col].notna() & fdata[name_col].astype(str).str.strip().ne("-")]
+        names_ = d[name_col].astype(str).str.strip()
+        if name_col != "Customer Name":  # tampilan Proper seperti Customer Name
+            names_ = proper_case(names_)
+        d = d.assign(_cust=names_,
                      _inv=(invoice_key(d["Invoice No"]) if "Invoice No" in d.columns
                            else pd.Series(d.index.astype(str), index=d.index)))
         agg = d.groupby("_cust")[metric].sum().rename_axis("Customer").to_frame()
@@ -1357,6 +1361,8 @@ with tab_dash:
         t.insert(0, "Rank", range(1, len(t) + 1))
         vmax = float(t[bar_col].max()) if len(t) and t[bar_col].max() > 0 else 100.0
         sub_txt = "diurutkan dari Avg Profit % tertinggi" if with_avg else "porsi dari total"
+        if name_col != "Customer Name":
+            sub_txt += f" · berdasarkan kolom {name_col}"
         section(f"Top {top_n} Customer · {metric}", sub_txt, box=box)
         box.dataframe(
             t, hide_index=True, width="stretch", height=38 + 35 * len(t),
@@ -1393,7 +1399,8 @@ with tab_dash:
 
     t1, t2 = st.columns(2)
     with t1.container(border=True, key="card_cust_sales"):
-        customer_share_table(st, "Sales AR", "cust_sales")
+        # Customer di tabel Sales AR diambil dari kolom Invoice To (bila ada)
+        customer_share_table(st, "Sales AR", "cust_sales", name_col=inv_to_col or "Customer Name")
     with t2.container(border=True, key="card_cust_profit"):
         customer_share_table(st, "Profit", "cust_profit", with_avg=True)
 
