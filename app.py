@@ -816,13 +816,29 @@ def customer_norm(sr: pd.Series) -> pd.Series:
     return s_.str.replace(r"\s*\(\s*", "(", regex=True).str.replace(r"\s*\)", ")", regex=True)
 
 
+# Singkatan yang tetap huruf besar setelah dibuat Proper
+PROPER_KEEP_UPPER = ["PT", "CV", "CBT", "BUMN", "PLN", "PGN", "KAI", "BRI", "BNI", "BCA", "BTN",
+                     "BPJS", "SKK", "LNG", "UD", "TNI", "POLRI", "RI", "II", "III", "IV"]
+
+
+def proper_case(sr: pd.Series) -> pd.Series:
+    """Ubah teks jadi Proper Case ('CBT PERTAMINA' -> 'CBT Pertamina',
+    'pt bank mandiri (persero) tbk' -> 'PT Bank Mandiri (Persero) Tbk').
+    Singkatan di PROPER_KEEP_UPPER tetap huruf besar; nilai kosong tidak diubah."""
+    s_ = sr.astype("string").str.strip().str.replace(r"\s+", " ", regex=True).str.lower()
+    s_ = s_.str.replace(r"(?<![\w'’])([a-z])", lambda m: m.group(1).upper(), regex=True)
+    keep = "|".join(w.capitalize() for w in PROPER_KEEP_UPPER)
+    s_ = s_.str.replace(rf"\b({keep})\b", lambda m: m.group(1).upper(), regex=True)
+    return s_.astype(object).where(sr.notna(), sr)
+
+
 # Aturan merge customer diterapkan otomatis (tanpa tampilan di halaman)
 if "Customer Name" in data.columns:
     rule_map = {customer_norm(pd.Series([r["Nama Customer Asli"]]))[0]: r["Digabung Menjadi"]
                 for r in DEFAULT_CUSTOMER_RULES}
     orig = data["Customer Name"]
     mapped = customer_norm(orig).map(rule_map)
-    data = data.assign(**{"Customer Name": mapped.fillna(orig),
+    data = data.assign(**{"Customer Name": proper_case(mapped.fillna(orig)),
                           "Customer Name (Asli)": orig})
 
 # ---------------------------------------------------------------------------
@@ -956,32 +972,38 @@ with tab_dash:
         key = d[col].astype(str).str.strip()
         if col == "Hotel City":  # satukan 'JAKARTA' / 'Jakarta'
             key = key.str.title()
-        agg = d.groupby(key).agg(**{"Sales AR": ("Sales AR", "sum"),
-                                     "Room Night": ("Room Night", "sum")})
+        aggs = {"Sales AR": ("Sales AR", "sum"), "Room Night": ("Room Night", "sum")}
+        if "Profit" in d.columns:
+            aggs["Profit"] = ("Profit", "sum")
+        agg = d.groupby(key).agg(**aggs)
         agg.index.name = col
         t = agg.nlargest(top_n, metric).sort_values(metric).reset_index()
         t["Sales / Room Night"] = t["Sales AR"] / t["Room Night"].where(t["Room Night"] > 0)
         f = px.bar(t, x=metric, y=col, orientation="h", title=title,
                    color_discrete_sequence=[color], height=max(350, 28 * len(t) + 100),
                    text_auto=",.0f" if metric == "Room Night" else False,
-                   hover_data={"Sales AR": ":,.0f", "Room Night": ":,.0f",
-                               "Sales / Room Night": ":,.0f"})
+                   hover_data={c: ":,.0f" for c in
+                               ["Sales AR", "Profit", "Room Night", "Sales / Room Night"]
+                               if c in t.columns})
         f.update_traces(textposition="outside", cliponaxis=False)
         f.update_layout(yaxis_title=None, margin=dict(t=50, b=20, r=40))
         return f
 
-    def four_charts(metric, label, colors, key):
+    def four_charts(metric, label, colors, key, second=None):
+        """second: (kolom, nama, metric) untuk grafik ke-2; default Top Hotel dengan metric sama."""
+        second = second or ("Hotel (Grup)", "Hotel", metric)
         c1, c2 = st.columns(2)
-        for col_box, (col, name, color) in zip(
+        for col_box, (col, name, m_), color in zip(
             [c1, c2, c1, c2],
-            [("Customer Name", "Customer", colors[0]), ("Hotel (Grup)", "Hotel", colors[1]),
-             ("Hotel City", "Kota", colors[2]), ("Supplier Name", "Supplier", colors[3])]):
-            fig = top_bar(col, f"Top {top_n} {name} ({label})", color, metric)
+            [("Customer Name", "Customer", metric), second,
+             ("Hotel City", "Kota", metric), ("Supplier Name", "Supplier", metric)], colors):
+            fig = top_bar(col, f"Top {top_n} {name} ({m_ if m_ != metric else label})", color, m_)
             if fig is not None:
-                col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}")
+                col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}_{m_}")
 
     st.markdown("#### 💰 Analisa Sales AR")
-    four_charts("Sales AR", "Sales AR", ["#2E86AB", "#A23B72", "#3B8B5A", "#C73E1D"], "sales")
+    four_charts("Sales AR", "Sales AR", ["#2E86AB", "#A23B72", "#3B8B5A", "#C73E1D"], "sales",
+                second=("Customer Name", "Customer", "Profit"))
 
     # ---------------- Analisa Room Night (Room × Night) ----------------
     if "Room Night" in fdata.columns:
