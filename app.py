@@ -633,12 +633,12 @@ def to_excel_bytes(df: pd.DataFrame, summary: pd.DataFrame, extra: dict = None) 
     return excel_book(sheets)
 
 
-def excel_download(box, label: str, make, file_name: str, key: str):
+def excel_download(box, label: str, make, file_name: str, key: str, **kw):
     """Tombol unduh Excel. 'make' = fungsi tanpa argumen yang menghasilkan bytes.
     Di Streamlit versi baru file baru dibuat saat tombol diklik (halaman tidak melambat)."""
     extra = {"on_click": "ignore"} if LAZY_DL else {}
     box.download_button(label, make if LAZY_DL else make(), file_name=file_name,
-                        mime=XLSX_MIME, key=key, type="primary", **extra)
+                        mime=XLSX_MIME, key=key, type="primary", **extra, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -1962,7 +1962,7 @@ with tab_find:
                      .rename(columns={hcol: "Hotel"}))
             fx["table"] = per_h
             with st.container(border=True, key="card_find_table"):
-                t1_, t2_ = st.columns([4, 1])
+                t1_, t2_ = st.columns([5, 1], vertical_alignment="center")
                 section("Ringkasan per Hotel", f"{angka(len(per_h))} hotel · urut Revenue terbesar",
                         box=t1_)
 
@@ -1980,7 +1980,8 @@ with tab_find:
 
                 _fn = "ringkasan_per_hotel" + (f"_{re.sub(r'[^A-Za-z0-9]+', '_', sel_sup)}"
                                                if sel_sup else "")
-                excel_download(t2_, "⬇️ Excel", make_hotel_xlsx, f"{_fn}.xlsx", "dl_find_xlsx")
+                excel_download(t2_, "⬇️ Download Excel", make_hotel_xlsx, f"{_fn}.xlsx",
+                               "dl_find_xlsx", width="stretch")
                 st.dataframe(
                     per_h, hide_index=True, width="stretch",
                     height=min(460, 38 + 35 * len(per_h)),
