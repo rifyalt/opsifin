@@ -939,6 +939,58 @@ def unmatched_hotels() -> pd.DataFrame:
             .sort_values("Transaksi", ascending=False).reset_index(drop=True))
 
 
+KPI_CSS = """<style>
+.kpi-grid {display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin:4px 0 6px;}
+.kpi {position:relative; overflow:hidden; border-radius:16px; padding:18px 20px 16px;
+      background:var(--kpi-bg); border:1px solid var(--kpi-bd);
+      box-shadow:0 1px 2px rgba(16,24,40,.04), 0 4px 14px rgba(16,24,40,.06);
+      transition:transform .15s ease, box-shadow .15s ease;}
+.kpi:hover {transform:translateY(-2px); box-shadow:0 2px 4px rgba(16,24,40,.06), 0 10px 24px rgba(16,24,40,.10);}
+.kpi::before {content:""; position:absolute; inset:0 auto 0 0; width:5px; background:var(--kpi-c);}
+.kpi .top {display:flex; align-items:center; gap:10px; margin-bottom:10px;}
+.kpi .ic {width:36px; height:36px; border-radius:10px; display:grid; place-items:center;
+          font-size:1.15rem; background:var(--kpi-soft);}
+.kpi .lbl {font-size:.78rem; font-weight:600; letter-spacing:.05em; text-transform:uppercase;
+           color:var(--kpi-c);}
+.kpi .val {font-size:clamp(1.35rem,2.1vw,1.95rem); font-weight:700; line-height:1.15;
+           color:var(--kpi-ink); word-break:break-word; font-variant-numeric:tabular-nums;}
+.kpi .sub {font-size:.82rem; color:var(--kpi-mute); margin-top:6px;}
+.kpi .bar {height:6px; border-radius:99px; background:var(--kpi-soft); margin-top:10px; overflow:hidden;}
+.kpi .bar > span {display:block; height:100%; border-radius:99px; background:var(--kpi-c);}
+.kpi {--kpi-bg:#ffffff; --kpi-bd:#e8ebf0; --kpi-ink:#1d2433; --kpi-mute:#6b7385;}
+.kpi.blue   {--kpi-c:#1f6fb2; --kpi-soft:#e6f0fa;}
+.kpi.green  {--kpi-c:#2a8a57; --kpi-soft:#e5f4ec;}
+.kpi.orange {--kpi-c:#d9730d; --kpi-soft:#fdf0e2;}
+.kpi.purple {--kpi-c:#6b4fbb; --kpi-soft:#efebfa;}
+.kpi.teal   {--kpi-c:#14808a; --kpi-soft:#e2f3f4;}
+.kpi.rose   {--kpi-c:#c2416b; --kpi-soft:#fbe8ef;}
+@media (prefers-color-scheme: dark) {
+  .kpi {--kpi-bg:#1b1f2a; --kpi-bd:#2b3140; --kpi-ink:#f1f3f7; --kpi-mute:#a3abbb;}
+  .kpi.blue{--kpi-soft:#1d3349;} .kpi.green{--kpi-soft:#1b3a2b;} .kpi.orange{--kpi-soft:#43301a;}
+  .kpi.purple{--kpi-soft:#2f2a4a;} .kpi.teal{--kpi-soft:#163a3e;} .kpi.rose{--kpi-soft:#43212d;}
+}
+.kpi-cap {font-size:.8rem; color:#8a91a1; margin:2px 0 14px;}
+</style>"""
+
+
+def kpi_cards(items: list, caption: str = ""):
+    """Scorecard berwarna. items: dict(icon, label, value, sub, tone, bar=None (0-100), tip=None)."""
+    cards = []
+    for it in items:
+        tip = f' title="{html.escape(it["tip"])}"' if it.get("tip") else ""
+        bar = (f'<div class="bar"><span style="width:{it["bar"]:.1f}%"></span></div>'
+               if it.get("bar") is not None else "")
+        cards.append(
+            f'<div class="kpi {it.get("tone", "blue")}"{tip}>'
+            f'<div class="top"><div class="ic">{it.get("icon", "")}</div>'
+            f'<div class="lbl">{html.escape(it["label"])}</div></div>'
+            f'<div class="val">{html.escape(str(it["value"]))}</div>'
+            f'<div class="sub">{html.escape(it.get("sub", ""))}</div>{bar}</div>')
+    cap = f'<div class="kpi-cap">{html.escape(caption)}</div>' if caption else ""
+    st.markdown(KPI_CSS + '<div class="kpi-grid">' + "".join(cards) + "</div>" + cap,
+                unsafe_allow_html=True)
+
+
 def col_sum(df, c):
     return df[c].sum() if c in df.columns else 0
 
@@ -948,17 +1000,29 @@ with tab_dash:
     profit = col_sum(fdata, "Profit")
     n_inv = invoice_key(fdata["Invoice No"]).nunique() if "Invoice No" in fdata else len(fdata)
     rn = col_sum(fdata, "Room Night")
-    k = st.columns(3) + st.columns(3)
-    k[0].metric("Total Sales AR", rupiah_full(sales))
-    k[1].metric("Total Profit", rupiah_full(profit))
-    k[2].metric("Margin", f"{(profit / sales * 100 if sales else 0):.2f}%")
-    k[3].metric("Jumlah Invoice (unik)", angka(n_inv),
-                help=f"Dihitung dari nomor invoice unik. {angka(len(fdata))} baris transaksi "
-                     f"berasal dari {angka(n_inv)} invoice, karena satu invoice bisa berisi "
-                     f"beberapa baris (beberapa kamar, penyesuaian, dll.).")
-    k[4].metric("Room Night", angka(rn))
-    if "Hotel (Grup)" in fdata.columns:
-        k[5].metric("Jumlah Hotel", angka(fdata["Hotel (Grup)"].nunique()))
+    margin = profit / sales * 100 if sales else 0
+    n_hotel = fdata["Hotel (Grup)"].nunique() if "Hotel (Grup)" in fdata.columns else 0
+    n_city = (fdata["Hotel City"].dropna().astype(str).str.strip().str.title().nunique()
+              if "Hotel City" in fdata.columns else 0)
+    periode = "-"
+    if "Inv Date" in fdata.columns and fdata["Inv Date"].notna().any():
+        periode = f"{fdata['Inv Date'].min():%d %b %Y} – {fdata['Inv Date'].max():%d %b %Y}"
+    kpi_cards([
+        dict(icon="💰", label="Total Sales AR", value=rupiah_full(sales), tone="blue",
+             sub=f"Rata-rata {rupiah_full(sales / n_inv) if n_inv else '-'} / invoice"),
+        dict(icon="📈", label="Total Profit", value=rupiah_full(profit), tone="green",
+             sub=f"Rata-rata {rupiah_full(profit / n_inv) if n_inv else '-'} / invoice"),
+        dict(icon="🎯", label="Margin", value=f"{margin:.2f}%", tone="orange",
+             sub="Total Profit ÷ Total Sales AR", bar=max(min(margin / 20 * 100, 100), 0),
+             tip="Bar penuh = margin 20%"),
+        dict(icon="🧾", label="Jumlah Invoice (unik)", value=angka(n_inv), tone="purple",
+             sub=f"dari {angka(len(fdata))} baris transaksi",
+             tip="Satu invoice bisa berisi beberapa baris (beberapa kamar, penyesuaian, dll.)"),
+        dict(icon="🛏️", label="Room Night", value=angka(rn), tone="teal",
+             sub=f"Rata-rata {rupiah_full(sales / rn) if rn else '-'} / room night"),
+        dict(icon="🏨", label="Jumlah Hotel", value=angka(n_hotel), tone="rose",
+             sub=f"di {angka(n_city)} kota"),
+    ], caption=f"Periode Inv Date: {periode}")
 
     # Tren bulanan
     if "Bulan" in fdata.columns:
