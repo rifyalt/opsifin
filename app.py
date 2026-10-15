@@ -1085,18 +1085,21 @@ with tab_dash:
     customer_share_table(t2, "Profit", "cust_profit", with_avg=True)
     st.divider()
 
+    # Komposisi berdasarkan Room Night (Room × Night); Sales AR tetap tampil saat hover
     c3, c4 = st.columns(2)
-    if "Supplier Category" in fdata.columns:
-        sc_ = (fdata.groupby("Supplier Category")
-               .agg(**{"Sales AR": ("Sales AR", "sum"), "Room Night": ("Room Night", "sum")})
-               .reset_index())
-        c3.plotly_chart(px.pie(sc_, names="Supplier Category", values="Sales AR", hole=0.5,
-                               hover_data={"Room Night": ":,.0f"},
-                               title="Komposisi Sales per Kategori Supplier"), width="stretch")
-    if "Product Type" in fdata.columns:
-        p = fdata.groupby("Product Type")["Sales AR"].sum().reset_index()
-        c4.plotly_chart(px.pie(p, names="Product Type", values="Sales AR", hole=0.5,
-                               title="Komposisi Sales per Product Type"), width="stretch")
+    for box_, col_, label_ in [(c3, "Supplier Category", "Kategori Supplier"),
+                               (c4, "Product Type", "Product Type")]:
+        if col_ in fdata.columns and "Room Night" in fdata.columns:
+            comp = (fdata.groupby(col_)
+                    .agg(**{"Room Night": ("Room Night", "sum"), "Sales AR": ("Sales AR", "sum")})
+                    .reset_index())
+            fig_ = px.pie(comp, names=col_, values="Room Night", hole=0.5,
+                          hover_data={"Sales AR": ":,.0f"},
+                          title=f"Komposisi Room Night per {label_}")
+            fig_.update_traces(hovertemplate="<b>%{label}</b><br>Room Night: %{value:,.0f}"
+                                             " (%{percent})<br>Sales AR: %{customdata[0]:,.0f}"
+                                             "<extra></extra>")
+            box_.plotly_chart(fig_, width="stretch", key=f"pie_rn_{col_}")
 
 @st.cache_data(show_spinner=False)
 def hotel_ranking(df: pd.DataFrame) -> pd.DataFrame:
