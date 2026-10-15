@@ -1004,8 +1004,9 @@ with tab_dash:
     def customer_share_table(box, metric: str, key: str, with_avg: bool = False):
         """Tabel Top N Customer berdasarkan metric.
         with_avg=False: kolom Share % = porsi dari total semua customer.
-        with_avg=True : kolom Avg / Booking (Rp) + Avg Profit % = rata-rata margin
-                        (Profit ÷ Sales AR) dari setiap booking (Invoice No unik) customer."""
+        with_avg=True : kolom Booking (Invoice No unik), Avg Booking / Bulan (Booking ÷ jumlah
+                        bulan periode) + Avg Profit % = rata-rata margin (Profit ÷ Sales AR)
+                        dari setiap booking customer."""
         if "Customer Name" not in fdata.columns or metric not in fdata.columns:
             return
         d = fdata[fdata["Customer Name"].astype(str).str.strip().ne("-")]
@@ -1014,7 +1015,12 @@ with tab_dash:
                            else pd.Series(d.index.astype(str), index=d.index)))
         agg = d.groupby("_cust")[metric].sum().rename_axis("Customer").to_frame()
         total = agg[metric].sum()
-        avg_col, pct_col = "Avg Sales / Booking", "Avg Profit %"
+        avg_col, pct_col = "Avg Booking / Bulan", "Avg Profit %"
+        # Jumlah bulan dalam periode data (mengikuti filter tanggal), dihitung inklusif
+        n_months = 1
+        if "Inv Date" in d.columns and d["Inv Date"].notna().any():
+            p0, p1 = d["Inv Date"].min().to_period("M"), d["Inv Date"].max().to_period("M")
+            n_months = max((p1 - p0).n + 1, 1)
         if with_avg and "Sales AR" in d.columns:
             # 1 baris per booking: jumlahkan Profit & Sales AR per Invoice No
             bk = (d.dropna(subset=["_inv"]).groupby(["_cust", "_inv"])[["Profit", "Sales AR"]].sum())
@@ -1022,9 +1028,8 @@ with tab_dash:
             per_c = bk.groupby(level=0).agg(n=("Profit", "size"), pct=("pct", "mean"))
             n_bk = per_c["n"].reindex(agg.index)
             agg["Booking"] = n_bk
-            # rata-rata nilai booking = total Sales AR ÷ jumlah Invoice No. unik
-            sales_c = d.groupby("_cust")["Sales AR"].sum().reindex(agg.index)
-            agg[avg_col] = sales_c / n_bk.where(n_bk > 0)
+            # rata-rata booking per bulan = jumlah Invoice No. unik ÷ jumlah bulan periode
+            agg[avg_col] = n_bk / n_months
             agg[pct_col] = per_c["pct"].reindex(agg.index)
             all_pct = bk["pct"].mean()
         else:
@@ -1034,9 +1039,11 @@ with tab_dash:
         t[metric] = round_money(t[metric].astype(float))
         bar_col = pct_col if with_avg else "Share %"
         if with_avg:
-            t[avg_col] = round_money(t[avg_col].astype(float))
+            t[avg_col] = t[avg_col].astype(float).round(1)
             t["Booking"] = t["Booking"].fillna(0).astype(int)
             t = t[["Customer", "Booking", avg_col, pct_col]]
+            # Top N dipilih dari total Profit, lalu diurutkan dari Avg Profit % tertinggi
+            t = t.sort_values(pct_col, ascending=False, na_position="last").reset_index(drop=True)
         t.insert(0, "Rank", range(1, len(t) + 1))
         vmax = float(t[bar_col].max()) if len(t) and t[bar_col].max() > 0 else 100.0
         box.markdown(f"**Top {top_n} Customer ({metric})**")
@@ -1050,8 +1057,9 @@ with tab_dash:
                     "Booking", format="localized", width="small",
                     help="Jumlah booking = jumlah Invoice No. unik"),
                 avg_col: st.column_config.NumberColumn(
-                    "Avg / Booking", format="localized", width="small",
-                    help="Rata-rata nilai booking = total Sales AR ÷ jumlah Invoice No. unik"),
+                    "Avg Booking / Bulan", format="%.1f", width="small",
+                    help=f"Rata-rata booking per bulan = jumlah Invoice No. unik ÷ "
+                         f"{n_months} bulan periode data"),
                 pct_col: st.column_config.ProgressColumn(
                     "Avg Profit %", format="%.2f%%", min_value=0, max_value=vmax, width="small",
                     help="Rata-rata margin per booking: (Profit ÷ Sales AR) tiap Invoice No., "
@@ -1060,7 +1068,11 @@ with tab_dash:
                     "Share %", format="%.2f%%", min_value=0, max_value=vmax, width="small"),
             })
         if with_avg:
-            box.caption(f"Diurutkan berdasarkan total {metric} ({rupiah_full(total)}) · "
+            per_txt = (f"{d['Inv Date'].min():%b %Y} – {d['Inv Date'].max():%b %Y}"
+                       if "Inv Date" in d.columns and d["Inv Date"].notna().any() else "-")
+            box.caption(f"Periode: {per_txt} ({n_months} bulan) · "
+                        f"Top {top_n} berdasarkan total {metric} ({rupiah_full(total)}), "
+                        f"diurutkan dari Avg Profit % tertinggi · "
                         f"rata-rata profit per booking "
                         f"semua customer: {all_pct:.2f}%.")
         else:
