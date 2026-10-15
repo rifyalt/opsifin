@@ -1071,27 +1071,7 @@ with tab_dash:
     t1, t2 = st.columns(2)
     customer_share_table(t1, "Sales AR", "cust_sales")
     customer_share_table(t2, "Profit", "cust_profit", with_avg=True)
-    c1, c2 = st.columns(2)
-    for col_box, (col, name, color) in zip(
-            [c1, c2], [("Hotel City", "Kota", "#3B8B5A"), ("Supplier Name", "Supplier", "#C73E1D")]):
-        fig = top_bar(col, f"Top {top_n} {name} (Sales AR)", color, "Sales AR")
-        if fig is not None:
-            col_box.plotly_chart(fig, width="stretch", key=f"sales_{col}")
-
-    # ---------------- Analisa Room Night (Room × Night) ----------------
-    if "Room Night" in fdata.columns:
-        st.divider()
-        st.markdown("#### 🛏️ Analisa Room Night (Room × Night)")
-        tot_rn = fdata["Room Night"].sum()
-        tot_room = fdata["Room"].sum() if "Room" in fdata.columns else 0
-        r = st.columns(3)
-        r[0].metric("Total Room Night", angka(tot_rn))
-        r[1].metric("Rata-rata Sales per Room Night",
-                    rupiah_full(sales / tot_rn) if tot_rn else "-")
-        r[2].metric("Rata-rata lama menginap", f"{tot_rn / tot_room:.2f} malam" if tot_room else "-",
-                    help="Total Room Night ÷ total Room")
-        four_charts("Room Night", "Room Night", ["#1B6F8A", "#7B2D5B", "#2A6B45", "#9C2F15"], "rn")
-        st.divider()
+    st.divider()
 
     c3, c4 = st.columns(2)
     if "Supplier Category" in fdata.columns:
