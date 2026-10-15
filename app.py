@@ -121,6 +121,10 @@ SUPPLIER_DEFAULT_CATEGORY = "Direct To Hotel"
 # Penulisan baku (Proper) untuk supplier di daftar kategori. Dicocokkan tanpa membedakan
 # huruf besar/kecil, spasi & tanda baca (EXPEDIA / Expedia / expedia -> "Expedia").
 # Supplier lain otomatis ditulis Proper (mis. "HOTEL MULIA" -> "Hotel Mulia").
+# Scorecard Room Night per supplier (tab Filter per Hotel); supplier lain -> "Other"
+SUPPLIER_RN_CARDS = ["Expedia", "Fit Ruums", "Destination Of The World", "MG Holiday",
+                     "Channel Manager", "Kliknbook", "Tiket.com", "Traveloka", "Webbeds"]
+
 SUPPLIER_STANDARD_NAMES = {
     "EXPEDIA": "Expedia",
     "FIT RUUMS": "Fit Ruums",
@@ -1039,7 +1043,11 @@ def unmatched_hotels() -> pd.DataFrame:
 
 KPI_CSS = """<style>
 .kpi-grid {display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin:8px 0 6px;}
-@media (max-width: 900px) {.kpi-grid {grid-template-columns:repeat(2,minmax(0,1fr));}}
+.kpi-grid.g5 {grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin-bottom:18px;}
+.kpi-grid.g5 .val {font-size:clamp(1.15rem,1.6vw,1.55rem);}
+@media (max-width: 1200px) {.kpi-grid.g5 {grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media (max-width: 900px) {.kpi-grid {grid-template-columns:repeat(2,minmax(0,1fr));}
+                           .kpi-grid.g5 {grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media (max-width: 560px) {.kpi-grid {grid-template-columns:1fr;}}
 .kpi {position:relative; overflow:hidden; border-radius:16px; padding:16px 18px 14px;
       background:var(--kpi-bg); border:1px solid var(--kpi-bd);
@@ -1073,7 +1081,7 @@ KPI_CSS = """<style>
 </style>"""
 
 
-def kpi_cards(items: list, caption: str = ""):
+def kpi_cards(items: list, caption: str = "", grid_class: str = ""):
     """Scorecard berwarna. items: dict(icon, label, value, sub, tone, bar=None (0-100), tip=None)."""
     cards = []
     for it in items:
@@ -1087,7 +1095,7 @@ def kpi_cards(items: list, caption: str = ""):
             f'<div class="val">{html.escape(str(it["value"]))}</div>'
             f'<div class="sub">{html.escape(it.get("sub", ""))}</div>{bar}</div>')
     cap = f'<div class="kpi-cap">{html.escape(caption)}</div>' if caption else ""
-    st.markdown(KPI_CSS + '<div class="kpi-grid">' + "".join(cards) + "</div>" + cap,
+    st.markdown(KPI_CSS + f'<div class="kpi-grid {grid_class}">' + "".join(cards) + "</div>" + cap,
                 unsafe_allow_html=True)
 
 
@@ -1526,6 +1534,84 @@ with tab_dash:
                       f"dashboard_penjualan_{_per or 'hotel'}.pdf", "application/pdf",
                       "dl_dash_pdf")
 
+# Warna tetap per supplier (dipakai di grafik perbandingan Room Night antar supplier)
+SUPPLIER_COLORS = {
+    "Expedia": "#0D7FCC", "Fit Ruums": "#F2A33A", "Destination Of The World": "#2CA58D",
+    "MG Holiday": "#8E5BD6", "Channel Manager": "#434343", "Kliknbook": "#E4572E",
+    "Tiket.com": "#1BA0E2", "Traveloka": "#7FB800", "Webbeds": "#C2416B", "Other": "#A6A6A6",
+}
+
+
+def supplier_group(df: pd.DataFrame) -> pd.Series:
+    """Kelompok supplier: nama di SUPPLIER_RN_CARDS (cocok bila mengandung nama tsb), lainnya 'Other'."""
+    key = df["Supplier Name"].astype(str).map(_compact)
+    grp = pd.Series("Other", index=df.index, dtype=object)
+    for name in SUPPLIER_RN_CARDS:
+        grp[(grp == "Other") & key.str.contains(_compact(name), regex=False)] = name
+    return grp
+
+
+SUP_CSS = """<style>
+.sup-grid {display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:6px 0 12px;}
+@media (max-width:1200px) {.sup-grid {grid-template-columns:repeat(3,minmax(0,1fr));}}
+@media (max-width:700px)  {.sup-grid {grid-template-columns:repeat(2,minmax(0,1fr));}}
+.sup {background:#fff; border:1px solid #e6eaef; border-radius:14px; padding:12px 14px 12px;
+      transition:box-shadow .15s ease, transform .15s ease;}
+.sup:hover {box-shadow:0 6px 18px rgba(13,127,204,.10); transform:translateY(-1px);}
+.sup.zero {opacity:.5;}
+.sup .nm {display:flex; align-items:center; gap:8px; font-size:.78rem; font-weight:600;
+          color:#434343; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.sup .dot {width:9px; height:9px; border-radius:50%; flex:none;}
+.sup .v {font-size:1.45rem; font-weight:700; color:#434343; margin:6px 0 2px;
+         font-variant-numeric:tabular-nums; line-height:1.1;}
+.sup .v small {font-size:.72rem; font-weight:500; color:#8c8c8c; margin-left:4px;}
+.sup .s {font-size:.74rem; color:#8c8c8c;}
+.sup .b {height:4px; border-radius:99px; background:#eef2f6; margin-top:9px; overflow:hidden;}
+.sup .b > span {display:block; height:100%; border-radius:99px;}
+.chips {display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 10px;}
+.chip {background:#F1F8FD; color:#0D7FCC; border-radius:99px; padding:4px 12px;
+       font-size:.8rem; font-weight:600;}
+.chip.g {background:#f2f2f2; color:#434343; font-weight:500;}
+@media (prefers-color-scheme: dark) {
+  .sup {background:#1b1f2a; border-color:#2b3140;} .sup .nm, .sup .v {color:#f1f3f7;}
+  .sup .b {background:#2b3140;} .chip.g {background:#2b3140; color:#e6e6e6;}
+}
+</style>"""
+
+
+def chips(items: list):
+    """Baris 'chip' kecil berisi ringkasan (teks, gaya) - gaya '' = biru, 'g' = abu-abu."""
+    st.markdown(SUP_CSS + '<div class="chips">' + "".join(
+        f'<span class="chip {c}">{html.escape(t)}</span>' for t, c in items) + "</div>",
+        unsafe_allow_html=True)
+
+
+def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series):
+    """Kartu ringkas total Room Night per supplier (SUPPLIER_RN_CARDS) + 'Other' untuk sisanya.
+    Warna titik & bar sama dengan warna garis di grafik tren."""
+    if "Supplier Name" not in df.columns or "Room Night" not in df.columns:
+        return
+    grp = supplier_group(df)
+    g = df.assign(_g=grp.values, _inv=inv.values).groupby("_g").agg(
+        rn=("Room Night", "sum"), bk=("_inv", "nunique"))
+    tot = g["rn"].sum() or 1
+    cat_of = dict(zip(SUPPLIER_RN_CARDS, supplier_category(pd.Series(SUPPLIER_RN_CARDS))))
+    tiles = []
+    for name in SUPPLIER_RN_CARDS + ["Other"]:
+        rn_, bk_ = g["rn"].get(name, 0), g["bk"].get(name, 0)
+        col = SUPPLIER_COLORS.get(name, "#7A7A7A")
+        tip = html.escape(f"{name} · kategori: {cat_of.get(name, 'supplier di luar daftar')}")
+        tiles.append(
+            f'<div class="sup{" zero" if not rn_ else ""}" title="{tip}">'
+            f'<div class="nm"><span class="dot" style="background:{col}"></span>{html.escape(name)}</div>'
+            f'<div class="v">{angka(rn_)}<small>RN</small></div>'
+            f'<div class="s">{rn_ / tot * 100:.1f}% · {angka(bk_)} booking</div>'
+            f'<div class="b"><span style="width:{rn_ / tot * 100:.1f}%;background:{col}"></span></div>'
+            f'</div>')
+    st.markdown(SUP_CSS + '<div class="sup-grid">' + "".join(tiles) + "</div>",
+                unsafe_allow_html=True)
+
+
 SCORECARD_CSS = """<style>
 .sc-wrap {display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:6px 0 18px;}
 .sc {border-radius:14px; padding:16px 18px; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.12);}
@@ -1558,83 +1644,106 @@ with tab_find:
     if hcol not in fdata.columns:
         st.info("Kolom Hotel Name tidak tersedia pada data.")
     else:
-        st.caption("Pilih satu atau beberapa hotel (nama sudah distandarkan). Data tetap mengikuti "
-                   "filter di sidebar. Kosongkan pilihan untuk melihat semua hotel.")
-
-        # --- Filter Domestic / International (dari kolom Product Type) ---
+        # ---------------- Kartu filter ----------------
         base = fdata
-        if "Product Type" in fdata.columns:
-            mkt = market_type(fdata["Product Type"])
-            m_opts = ["Semua"] + [x for x in ["Domestic", "International", "Lainnya"]
-                                  if (mkt == x).any()]
-            sel_m = st.radio("Domestic / International (kolom Product Type)", m_opts,
-                             horizontal=True, key="find_market")
-            if sel_m != "Semua":
-                base = fdata[mkt == sel_m]
-            grp = (fdata.assign(_m=mkt)
-                   .groupby("_m")["Product Type"].unique()
-                   .map(lambda v: ", ".join(sorted(map(str, v)))))
-            st.caption(" · ".join(f"**{k}**: {v}" for k, v in grp.items()))
-        else:
-            st.info("Kolom Product Type tidak ada, filter Domestic/International tidak tersedia.")
+        with st.container(border=True, key="card_find_filter"):
+            section("Pilih Hotel", "kosongkan untuk melihat semua hotel · mengikuti filter di sidebar")
+            fa, fb, fc = st.columns([1.7, 3, 1])
+            if "Product Type" in fdata.columns:
+                mkt = market_type(fdata["Product Type"])
+                m_opts = ["Semua"] + [x for x in ["Domestic", "International", "Lainnya"]
+                                      if (mkt == x).any()]
+                grp = (fdata.assign(_m=mkt).groupby("_m")["Product Type"].unique()
+                       .map(lambda v: ", ".join(sorted(map(str, v)))))
+                m_help = "Dari kolom Product Type — " + " · ".join(
+                    f"{k}: {v}" for k, v in grp.items())
+                if hasattr(st, "segmented_control"):  # tombol pilihan ringkas (Streamlit baru)
+                    sel_m = fa.segmented_control("Pasar", m_opts, default="Semua",
+                                                 key="find_market", help=m_help) or "Semua"
+                else:
+                    sel_m = fa.radio("Pasar", m_opts, horizontal=True, key="find_market",
+                                     help=m_help)
+                if sel_m != "Semua":
+                    base = fdata[mkt == sel_m]
+            else:
+                fa.caption("Kolom Product Type tidak ada.")
 
-        h_opts = (base.groupby(hcol)["Sales AR"].sum().sort_values(ascending=False).index
-                  .astype(str).tolist())
-        f1, f2 = st.columns([3, 1])
-        urut = f2.radio("Urutan pilihan", ["Revenue terbesar", "A–Z"], key="find_sort")
-        if urut == "A–Z":
-            h_opts = sorted(h_opts)
-        # Buang pilihan hotel yang tidak tersedia lagi setelah filter Domestic/International berubah
-        if "find_hotel" in st.session_state:
-            st.session_state["find_hotel"] = [h for h in st.session_state["find_hotel"]
-                                              if h in h_opts]
-        sel_h = f1.multiselect("Nama hotel", h_opts, key="find_hotel",
-                               placeholder="Ketik nama hotel... (kosong = semua hotel)")
-        hd = base[base[hcol].astype(str).isin(sel_h)] if sel_h else base
+            h_opts = (base.groupby(hcol)["Sales AR"].sum().sort_values(ascending=False).index
+                      .astype(str).tolist())
+            urut = fc.selectbox("Urutkan", ["Revenue terbesar", "A–Z"], key="find_sort")
+            if urut == "A–Z":
+                h_opts = sorted(h_opts)
+            # Buang pilihan hotel yang tidak tersedia lagi setelah filter pasar berubah
+            if "find_hotel" in st.session_state:
+                st.session_state["find_hotel"] = [h for h in st.session_state["find_hotel"]
+                                                  if h in h_opts]
+            sel_h = fb.multiselect("Nama hotel", h_opts, key="find_hotel",
+                                   placeholder="Ketik nama hotel… (kosong = semua hotel)")
+            hd = base[base[hcol].astype(str).isin(sel_h)] if sel_h else base
+
+            if not hd.empty:
+                inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
+                info = [(f"{angka(hd[hcol].nunique())} hotel", ""),
+                        (f"{angka(col_sum(hd, 'Room Night'))} Room Night", ""),
+                        (f"{angka(inv.nunique())} booking", ""),
+                        (rupiah_full(col_sum(hd, "Sales AR")), "g")]
+                if len(sel_h) == 1:  # info hotel tunggal: kota, chain, rating
+                    for c, lbl in [("Hotel City", ""), ("Hotel Chain", "Chain: "),
+                                   ("Hotel Rating", "")]:
+                        if c in hd.columns and hd[c].notna().any():
+                            v = hd[c].dropna().astype(str).mode().iat[0]
+                            info.append(("⭐" * int(float(v)) if c == "Hotel Rating"
+                                         else f"{lbl}{str(v).title() if c == 'Hotel City' else v}",
+                                         "g"))
+                chips(info)
+                if len(sel_h) == 1 and "Hotel Name (Asli)" in hd.columns:
+                    var = sorted(hd["Hotel Name (Asli)"].dropna().astype(str).unique())
+                    if len(var) > 1:
+                        st.caption(f"Penulisan asli ({len(var)}): " + "; ".join(var[:10])
+                                   + (" …" if len(var) > 10 else ""))
 
         if hd.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
-            mm = None
-            inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
-            scorecards(col_sum(hd, "Sales AR"), col_sum(hd, "Room Night"),
-                       int(inv.nunique()), len(hd))
+            # ---------------- Room Night per supplier ----------------
+            with st.container(border=True, key="card_find_sup"):
+                section("Room Night per Supplier",
+                        "Other = semua supplier di luar daftar · arahkan kursor untuk kategori")
+                supplier_rn_cards(hd, inv)
 
-            # Info hotel (kota, chain, rating) bila hanya 1 hotel dipilih
-            if len(sel_h) == 1:
-                info = []
-                for c, lbl in [("Hotel City", "Kota"), ("Hotel Chain", "Chain"),
-                               ("Hotel Rating", "Rating")]:
-                    if c in hd.columns and hd[c].notna().any():
-                        v = hd[c].dropna().astype(str).mode().iat[0]
-                        info.append(f"**{lbl}:** {'⭐' * int(float(v)) if c == 'Hotel Rating' else v}")
-                if "Hotel Name (Asli)" in hd.columns:
-                    var = sorted(hd["Hotel Name (Asli)"].dropna().astype(str).unique())
-                    info.append(f"**Penulisan asli ({len(var)}):** " + "; ".join(var[:10])
-                                + (" …" if len(var) > 10 else ""))
-                st.markdown(" · ".join(info))
-
-            # Tren bulanan
+            # ---------------- Tren bulanan per supplier ----------------
             if "Bulan" in hd.columns:
                 mm = (hd.assign(_inv=inv.values).groupby("Bulan")
-                      .agg(Revenue=("Sales AR", "sum"), RoomNight=("Room Night", "sum"),
-                           Booking=("_inv", "nunique")).reset_index())
+                      .agg(RoomNight=("Room Night", "sum")).reset_index())
                 mm["Label"] = (mm["Bulan"].dt.month.map(lambda x: BULAN[x - 1]) + " "
                                + mm["Bulan"].dt.strftime("%y"))
-                fg = go.Figure()
-                fg.add_bar(x=mm["Label"], y=mm["Revenue"], name="Revenue", marker_color="#0D7FCC")
-                fg.add_scatter(x=mm["Label"], y=mm["RoomNight"], name="Room Night", yaxis="y2",
-                               mode="lines+markers", line=dict(color="#1494C6", width=3))
-                fg.add_scatter(x=mm["Label"], y=mm["Booking"], name="Booking", yaxis="y2",
-                               mode="lines+markers", line=dict(color="#434343", width=2, dash="dot"))
-                fg.update_layout(title="Tren Bulanan: Revenue, Room Night & Booking", height=420,
-                                 yaxis=dict(title="Revenue (Rp)"),
-                                 yaxis2=dict(title="Room Night / Booking", overlaying="y",
-                                             side="right"),
-                                 legend=dict(orientation="h", y=1.12), margin=dict(t=80, b=30))
-                st.plotly_chart(fg, width="stretch", key="find_trend")
+                with st.container(border=True, key="card_find_trend"):
+                    section("Tren Room Night per Supplier",
+                            "klik nama di legenda untuk menyembunyikan / menampilkan garis")
+                    fg = go.Figure()
+                    if "Supplier Name" in hd.columns:
+                        sm = (hd.assign(_g=supplier_group(hd).values).groupby(["Bulan", "_g"])
+                              ["Room Night"].sum().unstack(fill_value=0)
+                              .reindex(mm["Bulan"], fill_value=0))
+                        order = [s for s in SUPPLIER_RN_CARDS + ["Other"]
+                                 if s in sm.columns and sm[s].sum() > 0]
+                        for s in order:
+                            fg.add_scatter(x=mm["Label"], y=sm[s].values, name=s,
+                                           mode="lines+markers",
+                                           line=dict(color=SUPPLIER_COLORS.get(s, "#7A7A7A"),
+                                                     width=2.5, shape="spline", smoothing=0.6,
+                                                     dash="dot" if s == "Other" else "solid"),
+                                           marker=dict(size=6),
+                                           hovertemplate=f"{s}: " + "%{y:,.0f} RN<extra></extra>")
+                    clean_fig(fg, 380)
+                    fg.update_layout(hovermode="x unified",
+                                     yaxis=dict(title=None, rangemode="tozero"),
+                                     legend=dict(orientation="h", y=1.1, x=0, xanchor="left",
+                                                 title=None, font=dict(size=12)))
+                    st.plotly_chart(fg, width="stretch", key="find_trend",
+                                    config={"displayModeBar": False})
 
-            # Ringkasan per hotel
+            # ---------------- Ringkasan per hotel ----------------
             g = hd.assign(_inv=inv.values).groupby(hcol)
             per_h = g.agg(Revenue=("Sales AR", "sum"), **{"Room Night": ("Room Night", "sum"),
                                                           "Booking": ("_inv", "nunique")})
@@ -1643,22 +1752,35 @@ with tab_find:
                 if c in hd.columns:
                     per_h[lbl] = g[c].agg(lambda s: s.dropna().mode().iat[0]
                                           if s.notna().any() else None)
+            if "Kota" in per_h.columns:
+                per_h["Kota"] = per_h["Kota"].map(lambda v: str(v).title() if pd.notna(v) else v)
             per_h = per_h[[c for c in ["Kota", "Chain", "Rating"] if c in per_h.columns]
                           + ["Revenue", "Room Night", "Booking"]]
             per_h["Rata-rata / Room Night"] = per_h["Revenue"] / per_h["Room Night"].where(
                 per_h["Room Night"] > 0)
+            per_h["Share RN %"] = per_h["Room Night"] / (per_h["Room Night"].sum() or 1) * 100
+            for c in ("Revenue", "Rata-rata / Room Night"):
+                per_h[c] = round_money(per_h[c].astype(float))
             per_h = (per_h.sort_values("Revenue", ascending=False).reset_index()
                      .rename(columns={hcol: "Hotel"}))
-            st.markdown(f"**Ringkasan per hotel ({angka(len(per_h))} hotel)**")
-            st.dataframe(per_h, hide_index=True, width="stretch", height=min(420, 38 + 35 * len(per_h)),
-                         column_config={
-                             "Revenue": st.column_config.NumberColumn(format="localized"),
-                             "Room Night": st.column_config.NumberColumn(format="localized"),
-                             "Booking": st.column_config.NumberColumn(format="localized"),
-                             "Rata-rata / Room Night": st.column_config.NumberColumn(
-                                 format="localized"),
-                             "Rating": st.column_config.NumberColumn(format="%d ⭐"),
-                         })
+            with st.container(border=True, key="card_find_table"):
+                section(f"Ringkasan per Hotel", f"{angka(len(per_h))} hotel · urut Revenue terbesar")
+                st.dataframe(
+                    per_h, hide_index=True, width="stretch",
+                    height=min(460, 38 + 35 * len(per_h)),
+                    column_config={
+                        "Hotel": st.column_config.TextColumn(width="large"),
+                        "Revenue": st.column_config.NumberColumn(format="localized"),
+                        "Room Night": st.column_config.NumberColumn(format="localized"),
+                        "Booking": st.column_config.NumberColumn(format="localized"),
+                        "Rata-rata / Room Night": st.column_config.NumberColumn(
+                            "Avg / RN", format="localized",
+                            help="Rata-rata Revenue per Room Night"),
+                        "Share RN %": st.column_config.ProgressColumn(
+                            "Share RN", format="%.1f%%", min_value=0,
+                            max_value=float(per_h["Share RN %"].max() or 100)),
+                        "Rating": st.column_config.NumberColumn(format="%d ⭐"),
+                    })
 
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
