@@ -1586,9 +1586,32 @@ def chips(items: list):
         unsafe_allow_html=True)
 
 
-def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series):
-    """Kartu ringkas total Room Night per supplier (SUPPLIER_RN_CARDS) + 'Other' untuk sisanya.
-    Warna titik & bar sama dengan warna garis di grafik tren."""
+# Kartu supplier bisa diklik: tombol transparan menutupi seluruh kartu
+SUP_CLICK_CSS = """<style>
+[class*="st-key-supcard_"] {position: relative; margin-bottom: 4px;}
+[class*="st-key-supcard_"] [data-testid="stMarkdownContainer"],
+[class*="st-key-supcard_"] [data-testid="stMarkdown"] {margin-bottom: 0 !important; height: auto !important;}
+[class*="st-key-supcard_"] .sup {margin: 0;}
+[class*="st-key-supbtn_"] {position: absolute !important; inset: 0; z-index: 3; margin: 0 !important;
+    width: 100% !important; height: 100% !important;}
+[class*="st-key-supbtn_"] .stButton, [class*="st-key-supbtn_"] button {
+    width: 100% !important; height: 100% !important; min-height: 100% !important;}
+[class*="st-key-supbtn_"] button {opacity: 0; cursor: pointer; border: none !important;}
+.sup {cursor: pointer;}
+.sup.sel {border-width: 2px; box-shadow: 0 6px 18px rgba(13,127,204,.18);}
+.sup.dim {opacity: .45;}
+</style>"""
+
+
+def _toggle_supplier(name: str):
+    """Klik kartu yang sama lagi = hapus filter."""
+    cur = st.session_state.get("find_supplier")
+    st.session_state["find_supplier"] = None if cur == name else name
+
+
+def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series, selected=None):
+    """Kartu total Room Night per supplier (SUPPLIER_RN_CARDS) + 'Other'. Setiap kartu bisa
+    diklik untuk memfilter seluruh isi tab ini ke supplier tersebut."""
     if "Supplier Name" not in df.columns or "Room Night" not in df.columns:
         return
     grp = supplier_group(df)
@@ -1596,20 +1619,35 @@ def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series):
         rn=("Room Night", "sum"), bk=("_inv", "nunique"))
     tot = g["rn"].sum() or 1
     cat_of = dict(zip(SUPPLIER_RN_CARDS, supplier_category(pd.Series(SUPPLIER_RN_CARDS))))
-    tiles = []
-    for name in SUPPLIER_RN_CARDS + ["Other"]:
-        rn_, bk_ = g["rn"].get(name, 0), g["bk"].get(name, 0)
-        col = SUPPLIER_COLORS.get(name, "#7A7A7A")
-        tip = html.escape(f"{name} · kategori: {cat_of.get(name, 'supplier di luar daftar')}")
-        tiles.append(
-            f'<div class="sup{" zero" if not rn_ else ""}" title="{tip}">'
-            f'<div class="nm"><span class="dot" style="background:{col}"></span>{html.escape(name)}</div>'
-            f'<div class="v">{angka(rn_)}<small>RN</small></div>'
-            f'<div class="s">{rn_ / tot * 100:.1f}% · {angka(bk_)} booking</div>'
-            f'<div class="b"><span style="width:{rn_ / tot * 100:.1f}%;background:{col}"></span></div>'
-            f'</div>')
-    st.markdown(SUP_CSS + '<div class="sup-grid">' + "".join(tiles) + "</div>",
-                unsafe_allow_html=True)
+    names = SUPPLIER_RN_CARDS + ["Other"]
+    st.markdown(SUP_CSS, unsafe_allow_html=True)
+    st.markdown(SUP_CLICK_CSS, unsafe_allow_html=True)
+    for r0 in range(0, len(names), 5):
+        cols = st.columns(5, gap="small")
+        for col, name in zip(cols, names[r0:r0 + 5]):
+            i = names.index(name)
+            rn_, bk_ = g["rn"].get(name, 0), g["bk"].get(name, 0)
+            c_ = SUPPLIER_COLORS.get(name, "#7A7A7A")
+            cls = "sup"
+            if selected == name:
+                cls += " sel"
+            elif selected or not rn_:
+                cls += " dim"
+            tip = html.escape(f"{name} · kategori: {cat_of.get(name, 'supplier di luar daftar')} · "
+                              + ("klik lagi untuk menghapus filter" if selected == name
+                                 else "klik untuk memfilter"))
+            style = f' style="border-color:{c_};background:{c_}0F"' if selected == name else ""
+            with col.container(key=f"supcard_{i}"):
+                st.markdown(
+                    f'<div class="{cls}" title="{tip}"{style}>'
+                    f'<div class="nm"><span class="dot" style="background:{c_}"></span>'
+                    f'{html.escape(name)}</div>'
+                    f'<div class="v">{angka(rn_)}<small>RN</small></div>'
+                    f'<div class="s">{rn_ / tot * 100:.1f}% · {angka(bk_)} booking</div>'
+                    f'<div class="b"><span style="width:{rn_ / tot * 100:.1f}%;background:{c_}">'
+                    f'</span></div></div>', unsafe_allow_html=True)
+                st.button(name, key=f"supbtn_{i}", on_click=_toggle_supplier, args=(name,),
+                          disabled=not rn_ and selected != name)
 
 
 SCORECARD_CSS = """<style>
@@ -1679,7 +1717,15 @@ with tab_find:
                                                   if h in h_opts]
             sel_h = fb.multiselect("Nama hotel", h_opts, key="find_hotel",
                                    placeholder="Ketik nama hotel… (kosong = semua hotel)")
-            hd = base[base[hcol].astype(str).isin(sel_h)] if sel_h else base
+            hd_all = base[base[hcol].astype(str).isin(sel_h)] if sel_h else base
+            inv_all = (invoice_key(hd_all["Invoice No"]) if "Invoice No" in hd_all
+                       else pd.Series(hd_all.index, index=hd_all.index))
+            # Filter supplier dari kartu yang diklik (berlaku untuk semua isi tab ini)
+            sel_sup = st.session_state.get("find_supplier")
+            if sel_sup and "Supplier Name" in hd_all.columns and not hd_all.empty:
+                hd = hd_all[(supplier_group(hd_all) == sel_sup).values]
+            else:
+                sel_sup, hd = None, hd_all
 
             if not hd.empty:
                 inv = invoice_key(hd["Invoice No"]) if "Invoice No" in hd else pd.Series(hd.index)
@@ -1687,6 +1733,8 @@ with tab_find:
                         (f"{angka(col_sum(hd, 'Room Night'))} Room Night", ""),
                         (f"{angka(inv.nunique())} booking", ""),
                         (rupiah_full(col_sum(hd, "Sales AR")), "g")]
+                if sel_sup:
+                    info.insert(0, (f"Supplier: {sel_sup}", ""))
                 if len(sel_h) == 1:  # info hotel tunggal: kota, chain, rating
                     for c, lbl in [("Hotel City", ""), ("Hotel Chain", "Chain: "),
                                    ("Hotel Rating", "")]:
@@ -1702,14 +1750,24 @@ with tab_find:
                         st.caption(f"Penulisan asli ({len(var)}): " + "; ".join(var[:10])
                                    + (" …" if len(var) > 10 else ""))
 
-        if hd.empty:
+        if hd_all.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
-            # ---------------- Room Night per supplier ----------------
+            # ---------------- Room Night per supplier (kartu = filter) ----------------
             with st.container(border=True, key="card_find_sup"):
+                s1, s2 = st.columns([5, 1])
                 section("Room Night per Supplier",
-                        "Other = semua supplier di luar daftar · arahkan kursor untuk kategori")
-                supplier_rn_cards(hd, inv)
+                        f"filter aktif: {sel_sup} — semua isi tab mengikuti" if sel_sup else
+                        "klik kartu untuk memfilter semua isi tab · Other = supplier di luar daftar",
+                        box=s1)
+                if sel_sup:
+                    s2.button("✕ Hapus filter", key="clear_sup", on_click=_toggle_supplier,
+                              args=(sel_sup,), width="stretch")
+                supplier_rn_cards(hd_all, inv_all, selected=sel_sup)
+
+        if hd.empty and not hd_all.empty:
+            st.info("Tidak ada transaksi untuk supplier ini pada pilihan sekarang.")
+        if not hd.empty:
 
             # ---------------- Tren bulanan per supplier ----------------
             if "Bulan" in hd.columns:
