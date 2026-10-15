@@ -975,8 +975,8 @@ if fdata.empty:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_dash, tab_top, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
-    ["📈 Dashboard", "🏆 Top Hotel", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
+tab_dash, tab_find, tab_data, tab_hotel, tab_file = st.tabs(
+    ["📈 Dashboard", "🔍 Filter per Hotel", "🗂️ Data Gabungan", "🏨 Grup Hotel",
      "📁 Ringkasan File"])
 
 
@@ -1331,7 +1331,7 @@ with tab_dash:
         return f
 
     def four_charts(metric, label, colors, key, second=None):
-        """second: (kolom, nama, metric) untuk grafik ke-2; default Top Hotel dengan metric sama."""
+        """second: (kolom, nama, metric) untuk grafik ke-2; default grafik hotel dengan metric sama."""
         second = second or ("Hotel (Grup)", "Hotel", metric)
         c1, c2 = st.columns(2)
         for col_box, (col, name, m_), color in zip(
@@ -1493,112 +1493,6 @@ with tab_dash:
         file_download(_e2, "⬇️ Export PDF (1 halaman)", lambda d=dash: dashboard_pdf(d),
                       f"dashboard_penjualan_{_per or 'hotel'}.pdf", "application/pdf",
                       "dl_dash_pdf")
-
-@st.cache_data(show_spinner=False)
-def hotel_ranking(df: pd.DataFrame) -> pd.DataFrame:
-    """Ringkasan per hotel (grup): Sales AR, Profit, Room Night, invoice, ADR, kota utama."""
-    hcol = "Hotel (Grup)"
-    d = df[df[hcol].notna() & df[hcol].astype(str).str.strip().ne("-")]
-    d = d.assign(**{"Invoice No": invoice_key(d["Invoice No"])})
-    agg = d.groupby(hcol).agg(
-        **{"Sales AR": ("Sales AR", "sum"), "Profit": ("Profit", "sum"),
-           "Room Night": ("Room Night", "sum"), "Invoice (unik)": ("Invoice No", "nunique")})
-    # Kota utama = kota dengan transaksi terbanyak untuk hotel tsb
-    city = (d.groupby([hcol, "Hotel City"]).size().reset_index(name="n")
-            .sort_values("n").drop_duplicates(hcol, keep="last").set_index(hcol)["Hotel City"])
-    agg.insert(0, "Kota", city)
-    agg["Rata-rata / Room Night"] = (agg["Sales AR"] / agg["Room Night"].where(agg["Room Night"] > 0))
-    agg["Margin %"] = agg["Profit"] / agg["Sales AR"].where(agg["Sales AR"] != 0) * 100
-    agg["Share Sales %"] = agg["Sales AR"] / agg["Sales AR"].sum() * 100
-    agg["Share RN %"] = agg["Room Night"] / agg["Room Night"].sum() * 100
-    return agg.reset_index().rename(columns={hcol: "Hotel"})
-
-
-def ranking_section(rank: pd.DataFrame, metric: str, share_col: str, color: str,
-                    unit_fmt, key: str):
-    r = rank.sort_values(metric, ascending=False).reset_index(drop=True)
-    r.insert(0, "Rank", range(1, len(r) + 1))
-    top = r.head(top_n)
-
-    total = r[metric].sum()
-    c = st.columns(4)
-    c[0].metric(f"Total {metric}", unit_fmt(total))
-    c[1].metric(f"Kontribusi Top {top_n}", f"{top[metric].sum() / total * 100:.1f}%" if total else "-")
-    if len(top):
-        c[2].metric("Hotel #1", unit_fmt(top[metric].iat[0]))
-        c[2].caption(f"🥇 {top['Hotel'].iat[0]} ({top['Kota'].iat[0]})")
-    c[3].metric("Jumlah hotel", angka(len(r)))
-
-    g1, g2 = st.columns([3, 2])
-    chart = top.sort_values(metric)
-    fig = px.bar(chart, x=metric, y="Hotel", orientation="h", color_discrete_sequence=[color],
-                 hover_data={"Kota": True, "Sales AR": ":,.0f", "Room Night": ":,.0f",
-                             "Rata-rata / Room Night": ":,.0f"},
-                 title=f"Top {top_n} Hotel berdasarkan {metric}",
-                 height=max(380, 30 * len(chart) + 110))
-    fig.update_layout(yaxis_title=None, margin=dict(t=50, b=20))
-    g1.plotly_chart(fig, width="stretch", key=f"bar_{key}")
-
-    # Rata-rata harga per room night untuk hotel yang sama (urutan sama dengan grafik kiri)
-    adr = chart.assign(ADR=chart["Rata-rata / Room Night"].fillna(0))
-    f_adr = px.bar(adr, x="ADR", y="Hotel", orientation="h", color_discrete_sequence=["#434343"],
-                   title="Rata-rata Sales per Room Night", text_auto=",.0f",
-                   height=max(380, 30 * len(chart) + 110))
-    f_adr.update_layout(yaxis_title=None, xaxis_title="Rp / room night",
-                        yaxis=dict(showticklabels=False), margin=dict(t=50, b=20))
-    g2.plotly_chart(f_adr, width="stretch", key=f"adr_{key}")
-
-    # Tren bulanan Top 5
-    if "Bulan" in fdata.columns:
-        top5 = top["Hotel"].head(5).tolist()
-        src = "Sales AR" if metric == "Sales AR" else "Room Night"
-        tr = (fdata[fdata["Hotel (Grup)"].isin(top5)]
-              .groupby(["Bulan", "Hotel (Grup)"])[src].sum().reset_index())
-        f2 = px.line(tr, x="Bulan", y=src, color="Hotel (Grup)", markers=True,
-                     title=f"Tren Bulanan {metric} — Top 5 Hotel", height=400)
-        f2.update_layout(legend=dict(orientation="h", y=-0.25, title=None),
-                         xaxis_title=None, margin=dict(t=50))
-        st.plotly_chart(f2, width="stretch", key=f"trend_{key}")
-
-    st.markdown(f"**Peringkat lengkap ({angka(len(r))} hotel)**")
-    st.dataframe(
-        r[["Rank", "Hotel", "Kota", metric, share_col] +
-          [x for x in ["Sales AR", "Room Night", "Invoice (unik)", "Rata-rata / Room Night",
-                       "Profit", "Margin %"] if x != metric]],
-        hide_index=True, width="stretch", height=420,
-        column_config={
-            "Sales AR": st.column_config.NumberColumn(format="localized"),
-            "Profit": st.column_config.NumberColumn(format="localized"),
-            "Room Night": st.column_config.NumberColumn(format="localized"),
-            "Rata-rata / Room Night": st.column_config.NumberColumn(format="localized"),
-            "Margin %": st.column_config.NumberColumn(format="%.2f%%"),
-            share_col: st.column_config.ProgressColumn(
-                "Share %", format="%.2f%%", min_value=0,
-                max_value=float(r[share_col].max()) if len(r) else 100.0),
-        })
-    e1, e2 = st.columns(2)
-    excel_download(e1, f"⬇️ Unduh peringkat {metric} (Excel)",
-                   lambda r=r: excel_book({f"Peringkat {metric}": r}),
-                   f"top_hotel_{key}.xlsx", f"dlx_{key}")
-    e2.download_button(f"⬇️ Unduh peringkat {metric} (CSV)",
-                       round_money_cols(r).to_csv(index=False).encode("utf-8-sig"),
-                       file_name=f"top_hotel_{key}.csv", mime="text/csv", key=f"dl_{key}")
-
-
-with tab_top:
-    if not {"Hotel (Grup)", "Sales AR", "Room Night"} <= set(fdata.columns):
-        st.info("Kolom hotel / Sales AR / Room Night tidak tersedia pada data.")
-    else:
-        st.caption("Peringkat memakai nama hotel yang sudah digabung (tab Grup Hotel) dan "
-                   "mengikuti semua filter. Room Night = Room × Night. "
-                   "Jumlah Top N diatur dari slider di sidebar.")
-        rank = hotel_ranking(fdata[["Hotel (Grup)", "Hotel City", "Sales AR", "Profit",
-                                    "Room Night", "Invoice No"]])
-        sub1, sub2 = st.tabs(["💰 Top Spender Hotel (Sales AR)", "🛏️ Top Room Night"])
-        with sub1:
-            ranking_section(rank, "Sales AR", "Share Sales %", "#0D7FCC", rupiah_full, "spender")
-        with sub2:
-            ranking_section(rank, "Room Night", "Share RN %", "#1494C6", angka, "roomnight")
 
 SCORECARD_CSS = """<style>
 .sc-wrap {display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:6px 0 18px;}
