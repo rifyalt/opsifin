@@ -816,40 +816,14 @@ def customer_norm(sr: pd.Series) -> pd.Series:
     return s_.str.replace(r"\s*\(\s*", "(", regex=True).str.replace(r"\s*\)", ")", regex=True)
 
 
-cx = st.expander("👤 Aturan Merge Customer (gabungkan beberapa nama customer menjadi satu)")
+# Aturan merge customer diterapkan otomatis (tanpa tampilan di halaman)
 if "Customer Name" in data.columns:
-    cust_on = cx.toggle("Gabungkan nama customer", value=True,
-                                help="Nilai customer di kolom kiri dijumlahkan ke customer di "
-                                     "kolom kanan, dan yang ditampilkan hanya nama di kolom kanan.")
-    if "customer_rules" not in st.session_state:
-        st.session_state["customer_rules"] = pd.DataFrame(DEFAULT_CUSTOMER_RULES)
-    cust_opts = sorted(set(data["Customer Name"].dropna().astype(str).unique())
-                       | {r["Nama Customer Asli"] for r in DEFAULT_CUSTOMER_RULES})
-    rules = cx.data_editor(
-        st.session_state["customer_rules"], num_rows="dynamic", hide_index=True,
-        width="stretch", key="customer_rules_editor", disabled=not cust_on,
-        column_config={
-            "Nama Customer Asli": st.column_config.SelectboxColumn(
-                "Nama customer asli", options=cust_opts, required=True, width="large"),
-            "Digabung Menjadi": st.column_config.TextColumn("Digabung menjadi (nama yang ditampilkan)",
-                                                             required=True, width="large"),
-        })
-    cx.caption("Tambah baris (+) untuk aturan baru, mis. "
-                       "'CBT PERTAMINA(HOTEL CM)' → 'CBT PERTAMINA'.")
-
-    if cust_on:
-        r_ = rules.dropna(subset=["Nama Customer Asli", "Digabung Menjadi"])
-        r_ = r_[r_["Digabung Menjadi"].astype(str).str.strip().ne("")]
-        rule_map = dict(zip(customer_norm(r_["Nama Customer Asli"]),
-                            r_["Digabung Menjadi"].astype(str).str.strip()))
-        if rule_map:
-            orig = data["Customer Name"]
-            mapped = customer_norm(orig).map(rule_map)
-            n_rows = int(mapped.notna().sum())
-            data = data.assign(**{"Customer Name": mapped.fillna(orig),
-                                  "Customer Name (Asli)": orig})
-            cx.caption(f"{angka(n_rows)} baris digabung ke {len(set(rule_map.values()))} "
-                               f"customer.")
+    rule_map = {customer_norm(pd.Series([r["Nama Customer Asli"]]))[0]: r["Digabung Menjadi"]
+                for r in DEFAULT_CUSTOMER_RULES}
+    orig = data["Customer Name"]
+    mapped = customer_norm(orig).map(rule_map)
+    data = data.assign(**{"Customer Name": mapped.fillna(orig),
+                          "Customer Name (Asli)": orig})
 
 # ---------------------------------------------------------------------------
 # Merge kolom Invoice To (otomatis, tidak peka huruf besar/kecil & spasi)
@@ -868,8 +842,6 @@ if inv_to_col and INVOICE_TO_RULES:
     data = data.drop(columns=[f"{inv_to_col} (Asli)"], errors="ignore").copy()
     data[inv_to_col] = mapped.fillna(orig)
     data.insert(data.columns.get_loc(inv_to_col) + 1, f"{inv_to_col} (Asli)", orig)
-    cx.caption(f"Invoice To: {angka(int(mapped.notna().sum()))} baris "
-               "'CBT PERTAMINA (HOTEL)' digabung ke 'CBT PERTAMINA'.")
 
 # ---------------------------------------------------------------------------
 # Kategori Supplier (otomatis dari Supplier Name, tidak peka huruf besar/kecil)
