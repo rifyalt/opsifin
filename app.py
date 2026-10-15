@@ -1001,9 +1001,42 @@ with tab_dash:
             if fig is not None:
                 col_box.plotly_chart(fig, width="stretch", key=f"{key}_{col}_{m_}")
 
+    def customer_share_table(box, metric: str, key: str):
+        """Tabel Top N Customer berdasarkan metric + kolom Share % (porsi dari total semua customer)."""
+        if "Customer Name" not in fdata.columns or metric not in fdata.columns:
+            return
+        d = fdata[fdata["Customer Name"].astype(str).str.strip().ne("-")]
+        agg = (d.groupby(d["Customer Name"].astype(str).str.strip())[metric].sum()
+               .rename_axis("Customer").to_frame())
+        total = agg[metric].sum()
+        agg["Share %"] = agg[metric] / total * 100 if total else 0.0
+        t = agg.nlargest(top_n, metric).reset_index()
+        t[metric] = round_money(t[metric].astype(float))
+        t.insert(0, "Rank", range(1, len(t) + 1))
+        box.markdown(f"**Top {top_n} Customer ({metric})**")
+        box.dataframe(
+            t, hide_index=True, width="stretch", height=38 + 35 * len(t),
+            column_config={
+                "Rank": st.column_config.NumberColumn("#", width=40),
+                "Customer": st.column_config.TextColumn(width="medium"),
+                metric: st.column_config.NumberColumn(format="localized", width="small"),
+                "Share %": st.column_config.ProgressColumn(
+                    "Share %", format="%.2f%%", min_value=0, width="small",
+                    max_value=float(t["Share %"].max()) if len(t) and t["Share %"].max() > 0 else 100.0),
+            })
+        box.caption(f"Top {top_n} = {t['Share %'].sum():.2f}% dari total {metric} "
+                    f"({rupiah_full(total)}).")
+
     st.markdown("#### 💰 Analisa Sales AR")
-    four_charts("Sales AR", "Sales AR", ["#2E86AB", "#A23B72", "#3B8B5A", "#C73E1D"], "sales",
-                second=("Customer Name", "Customer", "Profit"))
+    t1, t2 = st.columns(2)
+    customer_share_table(t1, "Sales AR", "cust_sales")
+    customer_share_table(t2, "Profit", "cust_profit")
+    c1, c2 = st.columns(2)
+    for col_box, (col, name, color) in zip(
+            [c1, c2], [("Hotel City", "Kota", "#3B8B5A"), ("Supplier Name", "Supplier", "#C73E1D")]):
+        fig = top_bar(col, f"Top {top_n} {name} (Sales AR)", color, "Sales AR")
+        if fig is not None:
+            col_box.plotly_chart(fig, width="stretch", key=f"sales_{col}")
 
     # ---------------- Analisa Room Night (Room × Night) ----------------
     if "Room Night" in fdata.columns:
