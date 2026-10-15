@@ -1264,6 +1264,129 @@ def dashboard_pdf(dash: dict) -> bytes:
     return buf.getvalue()
 
 
+def hotel_pdf(fx: dict) -> bytes:
+    """PDF 1 halaman A4 untuk tab Filter per Hotel: filter aktif, ringkasan, Room Night per
+    supplier, tren Room Night per supplier, dan tabel Ringkasan per Hotel."""
+    import textwrap
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch, Rectangle
+
+    INK, MUTE, LINE = "#434343", "#7A7A7A", "#e3e6ec"
+    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 7, "axes.edgecolor": LINE,
+                         "xtick.color": MUTE, "ytick.color": MUTE})
+    fig = plt.figure(figsize=(8.27, 11.69))
+    bg = fig.add_axes([0, 0, 1, 1]); bg.axis("off"); bg.set_xlim(0, 1); bg.set_ylim(0, 1)
+    L, R = 0.045, 0.955
+
+    def sec(y, title, sub=""):
+        bg.text(L, y, title, fontsize=9.5, weight="bold", color=INK, va="bottom")
+        if sub:
+            bg.text(R, y + 0.001, sub, fontsize=6.3, color=MUTE, va="bottom", ha="right")
+
+    # Header + filter aktif
+    bg.text(L, 0.968, "Ringkasan Penjualan per Hotel", fontsize=16, weight="bold", color=INK)
+    bg.text(R, 0.968, pd.Timestamp.now().strftime("Dicetak %d %b %Y %H:%M"), fontsize=7,
+            color=MUTE, ha="right")
+    filt = (f"Periode: {fx.get('periode', '-')}   ·   Pasar: {fx.get('pasar', 'Semua')}   ·   "
+            f"Supplier: {fx.get('supplier') or 'Semua'}")
+    bg.text(L, 0.952, filt, fontsize=7.3, color=MUTE)
+    hotels = fx.get("hotels") or []
+    htxt = "Hotel: " + ("Semua hotel" if not hotels else "; ".join(hotels))
+    bg.text(L, 0.940, textwrap.shorten(htxt, 175, placeholder=" …"), fontsize=7, color=MUTE)
+    bg.add_line(plt.Line2D([L, R], [0.932, 0.932], color=LINE, lw=1))
+
+    # Kotak ringkasan (4)
+    kp = fx.get("kpi", [])
+    gap = 0.012
+    w = (R - L - gap * (len(kp) - 1)) / max(len(kp), 1)
+    for i, (label, value, color) in enumerate(kp):
+        x, y, h = L + i * (w + gap), 0.872, 0.05
+        bg.add_patch(FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0,rounding_size=0.008",
+                                    fc="white", ec=LINE, lw=0.8))
+        bg.add_patch(Rectangle((x, y + 0.004), 0.004, h - 0.008, fc=color, ec="none"))
+        bg.text(x + 0.014, y + h - 0.014, label.upper(), fontsize=6.2, weight="bold", color=color)
+        bg.text(x + 0.014, y + 0.011, value, fontsize=12, weight="bold", color=INK)
+
+    # Room Night per supplier (2 x 5)
+    sec(0.845, "Room Night per Supplier", "Other = supplier di luar daftar")
+    sup = fx.get("sup")
+    if sup is not None and len(sup):
+        tot = sup["rn"].sum() or 1
+        tw, th, tg = (R - L - 4 * 0.01) / 5, 0.05, 0.01
+        for i, row in enumerate(sup.itertuples(index=False)):
+            r, c = divmod(i, 5)
+            x, y = L + c * (tw + tg), 0.785 - r * (th + 0.008)
+            sel = fx.get("supplier") == row.name
+            bg.add_patch(FancyBboxPatch((x, y), tw, th, boxstyle="round,pad=0,rounding_size=0.006",
+                                        fc=row.color + "14" if sel else "white",
+                                        ec=row.color if sel else LINE, lw=1.4 if sel else 0.7))
+            a = 1 if (row.rn and (not fx.get("supplier") or sel)) else 0.45
+            bg.add_patch(plt.Circle((x + 0.011, y + th - 0.012), 0.0035, color=row.color, alpha=a))
+            bg.text(x + 0.019, y + th - 0.012, _cut(row.name, 22), fontsize=6.2, weight="bold",
+                    color=INK, va="center", alpha=a)
+            bg.text(x + 0.009, y + 0.017, angka(row.rn), fontsize=10.5, weight="bold",
+                    color=INK, alpha=a)
+            bg.text(x + 0.009, y + 0.006, f"{row.rn / tot * 100:.1f}% · {angka(row.bk)} booking",
+                    fontsize=5.4, color=MUTE, alpha=a)
+
+    # Tren Room Night per supplier
+    sec(0.705, "Tren Room Night per Supplier")
+    tr = fx.get("trend")
+    if tr is not None and len(tr):
+        ax = fig.add_axes([0.08, 0.47, 0.87, 0.215])
+        for s in [c for c in tr.columns if c != "Label"]:
+            ax.plot(tr["Label"], tr[s], lw=1.8, marker="o", ms=2.8, label=s,
+                    color=SUPPLIER_COLORS.get(s, "#7A7A7A"), ls=":" if s == "Other" else "-")
+        ax.set_ylim(bottom=0)
+        ax.grid(axis="y", color=LINE, lw=0.6); ax.set_axisbelow(True)
+        for s_ in ("top", "right", "left"):
+            ax.spines[s_].set_visible(False)
+        ax.tick_params(length=0, labelsize=6.5)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _p: angka(v)))
+        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=6, frameon=False, fontsize=6.2)
+
+    # Tabel ringkasan per hotel
+    t = fx.get("table")
+    if t is not None and len(t):
+        n_max = 18
+        sec(0.425, "Ringkasan per Hotel",
+            f"{angka(len(t))} hotel · urut Revenue terbesar"
+            + (f" · ditampilkan {n_max} teratas (lengkap di file Excel)" if len(t) > n_max else ""))
+        tt = t.head(n_max).copy()
+        keep = [c for c in ["Hotel", "Kota", "Revenue", "Room Night", "Booking",
+                            "Rata-rata / Room Night", "Share RN %"] if c in tt.columns]
+        tt = tt[keep].rename(columns={"Rata-rata / Room Night": "Avg / RN", "Share RN %": "Share RN"})
+        tt["Hotel"] = tt["Hotel"].map(lambda s: _cut(s, 38))
+        fm = {"Revenue": angka, "Room Night": angka, "Booking": angka, "Avg / RN": angka,
+              "Share RN": lambda v: f"{v:.1f}%".replace(".", ",")}
+        cells = [[("-" if pd.isna(v) else fm.get(c, str)(v)) for c, v in zip(tt.columns, row)]
+                 for row in tt.itertuples(index=False)]
+        cw = {"Hotel": 0.33, "Kota": 0.12, "Revenue": 0.15, "Room Night": 0.1, "Booking": 0.09,
+              "Avg / RN": 0.11, "Share RN": 0.1}
+        rows = len(cells) + 1
+        ax = fig.add_axes([L, 0.415 - 0.0205 * rows, R - L, 0.0205 * rows]); ax.axis("off")
+        tb = ax.table(cellText=cells, colLabels=list(tt.columns), loc="upper center",
+                      colWidths=[cw.get(c, 0.1) for c in tt.columns], cellLoc="right", colLoc="right")
+        tb.auto_set_font_size(False); tb.set_fontsize(6.4)
+        for (r_, c_), cell in tb.get_celld().items():
+            cell.set_edgecolor(LINE); cell.set_linewidth(0.5); cell.set_height(1 / rows)
+            if tt.columns[c_] in ("Hotel", "Kota"):
+                cell._loc = "left"; cell.set_text_props(ha="left")
+            if r_ == 0:
+                cell.set_facecolor("#f3f5f8"); cell.set_text_props(weight="bold", color=MUTE)
+            else:
+                cell.set_facecolor("white" if r_ % 2 else "#fafbfc")
+
+    bg.text(L, 0.014, "Data mengikuti filter yang aktif di aplikasi saat diunduh.", fontsize=5.8,
+            color=MUTE)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="pdf")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def file_download(box, label: str, make, file_name: str, mime: str, key: str):
     """Tombol unduh umum; file dibuat saat tombol diklik bila Streamlit mendukung."""
     extra = {"on_click": "ignore"} if LAZY_DL else {}
@@ -1620,6 +1743,10 @@ def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series, selected=None):
     tot = g["rn"].sum() or 1
     cat_of = dict(zip(SUPPLIER_RN_CARDS, supplier_category(pd.Series(SUPPLIER_RN_CARDS))))
     names = SUPPLIER_RN_CARDS + ["Other"]
+    stats = pd.DataFrame({"name": names,
+                          "rn": [g["rn"].get(n, 0) for n in names],
+                          "bk": [g["bk"].get(n, 0) for n in names],
+                          "color": [SUPPLIER_COLORS.get(n, "#7A7A7A") for n in names]})
     st.markdown(SUP_CSS, unsafe_allow_html=True)
     st.markdown(SUP_CLICK_CSS, unsafe_allow_html=True)
     for r0 in range(0, len(names), 5):
@@ -1648,6 +1775,7 @@ def supplier_rn_cards(df: pd.DataFrame, inv: pd.Series, selected=None):
                     f'</span></div></div>', unsafe_allow_html=True)
                 st.button(name, key=f"supbtn_{i}", on_click=_toggle_supplier, args=(name,),
                           disabled=not rn_ and selected != name)
+    return stats
 
 
 SCORECARD_CSS = """<style>
@@ -1679,9 +1807,11 @@ def scorecards(revenue: float, room_night: float, booking: int, n_rows: int):
 
 with tab_find:
     hcol = "Hotel (Grup)"
+    fx = {}  # isi tab untuk ekspor PDF
     if hcol not in fdata.columns:
         st.info("Kolom Hotel Name tidak tersedia pada data.")
     else:
+        find_pdf_box = st.container()  # tombol Export PDF (diisi setelah semua bagian dihitung)
         # ---------------- Kartu filter ----------------
         base = fdata
         with st.container(border=True, key="card_find_filter"):
@@ -1744,6 +1874,13 @@ with tab_find:
                                          else f"{lbl}{str(v).title() if c == 'Hotel City' else v}",
                                          "g"))
                 chips(info)
+                fx["kpi"] = [("Hotel", angka(hd[hcol].nunique()), "#0D7FCC"),
+                             ("Room Night", angka(col_sum(hd, "Room Night")), "#1BA0E2"),
+                             ("Booking", angka(inv.nunique()), "#1494C6"),
+                             ("Revenue", rupiah_full(col_sum(hd, "Sales AR")), "#434343")]
+                if "Inv Date" in hd.columns and hd["Inv Date"].notna().any():
+                    fx["periode"] = (f"{hd['Inv Date'].min():%d %b %Y} – "
+                                     f"{hd['Inv Date'].max():%d %b %Y}")
                 if len(sel_h) == 1 and "Hotel Name (Asli)" in hd.columns:
                     var = sorted(hd["Hotel Name (Asli)"].dropna().astype(str).unique())
                     if len(var) > 1:
@@ -1763,7 +1900,7 @@ with tab_find:
                 if sel_sup:
                     s2.button("✕ Hapus filter", key="clear_sup", on_click=_toggle_supplier,
                               args=(sel_sup,), width="stretch")
-                supplier_rn_cards(hd_all, inv_all, selected=sel_sup)
+                fx["sup"] = supplier_rn_cards(hd_all, inv_all, selected=sel_sup)
 
         if hd.empty and not hd_all.empty:
             st.info("Tidak ada transaksi untuk supplier ini pada pilihan sekarang.")
@@ -1785,6 +1922,8 @@ with tab_find:
                               .reindex(mm["Bulan"], fill_value=0))
                         order = [s for s in SUPPLIER_RN_CARDS + ["Other"]
                                  if s in sm.columns and sm[s].sum() > 0]
+                        fx["trend"] = pd.DataFrame({"Label": mm["Label"].values,
+                                                    **{s: sm[s].values for s in order}})
                         for s in order:
                             fg.add_scatter(x=mm["Label"], y=sm[s].values, name=s,
                                            mode="lines+markers",
@@ -1821,8 +1960,27 @@ with tab_find:
                 per_h[c] = round_money(per_h[c].astype(float))
             per_h = (per_h.sort_values("Revenue", ascending=False).reset_index()
                      .rename(columns={hcol: "Hotel"}))
+            fx["table"] = per_h
             with st.container(border=True, key="card_find_table"):
-                section(f"Ringkasan per Hotel", f"{angka(len(per_h))} hotel · urut Revenue terbesar")
+                t1_, t2_ = st.columns([4, 1])
+                section("Ringkasan per Hotel", f"{angka(len(per_h))} hotel · urut Revenue terbesar",
+                        box=t1_)
+
+                def make_hotel_xlsx(per_h=per_h, fx=dict(fx), sel_h=list(sel_h), sel_sup=sel_sup,
+                                    pasar=st.session_state.get("find_market") or "Semua"):
+                    card = [("Ringkasan per Hotel", None, "title"),
+                            ("Filter", None, None),
+                            ("Periode Inv Date", fx.get("periode", "-"), "text"),
+                            ("Pasar", pasar, "text"),
+                            ("Supplier", sel_sup or "Semua", "text"),
+                            ("Hotel", "Semua hotel" if not sel_h else "; ".join(sel_h), "text"),
+                            ("Diunduh", pd.Timestamp.now().strftime("%d %b %Y %H:%M"), "text")]
+                    out = per_h.rename(columns={"Share RN %": "Share Room Night %"})
+                    return excel_book({"Ringkasan per Hotel": out}, scorecard=card)
+
+                _fn = "ringkasan_per_hotel" + (f"_{re.sub(r'[^A-Za-z0-9]+', '_', sel_sup)}"
+                                               if sel_sup else "")
+                excel_download(t2_, "⬇️ Excel", make_hotel_xlsx, f"{_fn}.xlsx", "dl_find_xlsx")
                 st.dataframe(
                     per_h, hide_index=True, width="stretch",
                     height=min(460, 38 + 35 * len(per_h)),
@@ -1839,6 +1997,19 @@ with tab_find:
                             max_value=float(per_h["Share RN %"].max() or 100)),
                         "Rating": st.column_config.NumberColumn(format="%d ⭐"),
                     })
+
+    if fx.get("kpi"):
+        fx["pasar"] = st.session_state.get("find_market") or "Semua"
+        fx["supplier"] = st.session_state.get("find_supplier")
+        fx["hotels"] = list(st.session_state.get("find_hotel") or [])
+        with find_pdf_box:
+            _p1, _p2 = st.columns([3, 1])
+            _p1.caption("Ringkasan tab ini (sesuai filter & supplier yang dipilih) bisa diunduh "
+                        "sebagai PDF satu halaman (A4).")
+            _per = re.sub(r"[^A-Za-z0-9]+", "_", fx.get("periode", ""))[:40].strip("_")
+            file_download(_p2, "⬇️ Export PDF (1 halaman)", lambda f=dict(fx): hotel_pdf(f),
+                          f"ringkasan_hotel_{_per or 'periode'}.pdf", "application/pdf",
+                          "dl_find_pdf")
 
 with tab_data:
     st.subheader("Preview data gabungan (setelah filter)")
