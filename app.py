@@ -814,6 +814,7 @@ if std_on:
 # ---------------------------------------------------------------------------
 NAME_FIXES = {
     r"m(?:o|ö|oe|ø)venpick": "Mövenpick",   # Movenpick, MOVENPICK, Moevenpick -> Mövenpick
+    r"meli(?:a|á|à|â)": "Meliá",             # Melia, MELIA, Meliá -> Meliá
 }
 NAME_FIX_COLS = ["Supplier Name", "Hotel Name"]
 
