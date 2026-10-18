@@ -10,8 +10,10 @@ Cara menjalankan:
     streamlit run app.py
 """
 
+import hashlib
 import html
 import io
+import os
 import re
 from difflib import SequenceMatcher
 import time
@@ -1004,6 +1006,10 @@ fdata = multi_filter(fdata, "Customer Name", "Customer")
 fdata = multi_filter(fdata, "Supplier Category", "Kategori Supplier")
 fdata = multi_filter(fdata, "Hotel City", "Kota Hotel")
 top_n = st.sidebar.slider("Top N pada grafik", 5, 30, 10)
+st.sidebar.divider()
+st.sidebar.toggle("✨ Ringkasan AI otomatis", value=True, key="ai_auto",
+                  help="Claude membuat narasi singkat di tab Dashboard & Filter per Hotel setiap "
+                       "angka berubah. Matikan untuk membuatnya hanya saat tombol diklik.")
 
 if fdata.empty:
     st.warning("Tidak ada data yang cocok dengan filter.")
@@ -1218,7 +1224,7 @@ def dashboard_pdf(dash: dict) -> bytes:
             ncol, [1 / ncol] * ncol)
         draw_table([x0, 0.375, 0.44, 0.183], t,
                    {"Sales AR": num, "Booking": num, "Share %": pct, "Avg Profit %": pct,
-                    "Avg RN/Bln": dec1}, cw)
+                    "Avg RN/Bln": num}, cw)
         import textwrap
         bg.text(x0, 0.365, "\n".join(textwrap.wrap(cap, 95)), fontsize=5.6, color=MUTE, va="top")
 
@@ -1395,6 +1401,129 @@ def file_download(box, label: str, make, file_name: str, mime: str, key: str, **
                         key=key, type="primary", **extra, **kw)
 
 
+# ---------------------------------------------------------------------------
+# Ringkasan otomatis oleh Claude (Anthropic API)
+#   API key dibaca dari Streamlit Secrets / environment: ANTHROPIC_API_KEY
+#   Model opsional: ANTHROPIC_MODEL (default di bawah). Hanya angka ringkas halaman
+#   (bukan data mentah per transaksi) yang dikirim ke Claude.
+# ---------------------------------------------------------------------------
+AI_MODEL_DEFAULT = "claude-sonnet-5-5"
+AI_SYSTEM = """Kamu analis penjualan hotel di sebuah travel agent korporat di Indonesia.
+Tulis ringkasan eksekutif singkat dalam Bahasa Indonesia dari data ringkas sebuah halaman dashboard.
+Aturan:
+- Gunakan HANYA angka yang ada di data. Jangan mengarang angka, tren, maupun penyebab.
+- Format: satu kalimat pembuka, lalu 3-5 poin (diawali "- ") berisi temuan terpenting lengkap
+  dengan angkanya, lalu satu poin terakhir "- **Perlu diperhatikan:** ..." berisi anomali, risiko
+  konsentrasi, atau saran tindak lanjut yang masuk akal dari data.
+- Maksimal 170 kata. Tulis Rupiah ringkas (mis. Rp 13,75 M; Rp 962 Jt). Pakai format angka Indonesia.
+- Tanpa judul/heading dan tanpa basa-basi."""
+
+
+def _secret(name: str):
+    try:
+        v = st.secrets.get(name)
+    except Exception:  # noqa: BLE001 - secrets.toml tidak ada
+        v = None
+    return v or os.environ.get(name)
+
+
+def _df_txt(df: pd.DataFrame, max_rows: int = 15) -> str:
+    """Tabel ringkas -> teks CSV dengan angka dibulatkan, untuk dikirim ke Claude."""
+    d = df.head(max_rows).copy()
+    for c in d.columns:
+        if pd.api.types.is_float_dtype(d[c]):
+            d[c] = d[c].round(2)
+    return d.to_csv(index=False)
+
+
+def dash_facts(dash: dict) -> str:
+    L_ = [f"Periode Inv Date: {dash.get('periode', '-')}", "", "Scorecard:"]
+    L_ += [f"- {lbl}: {val} ({sub})" for lbl, val, sub, _c in dash.get("kpi", [])]
+    m = dash.get("trend")
+    if m is not None and len(m):
+        L_ += ["", "Tren bulanan (Rp):", _df_txt(m[["Label", "Sales", "Profit"]]
+                                             .rename(columns={"Label": "Bulan", "Sales": "Sales AR"}), 24)]
+    for k in ("cust_sales", "cust_profit"):
+        if k in dash:
+            title, sub, t, cap = dash[k]
+            L_ += ["", f"{title} ({sub}):", _df_txt(t), cap]
+    for title, comp, col_ in dash.get("pies", []):
+        tot = comp["Room Night"].sum() or 1
+        L_ += ["", f"{title}:"] + [f"- {n}: {angka(v)} RN ({v / tot * 100:.1f}%)"
+                                   for n, v in zip(comp[col_], comp["Room Night"])]
+    if dash.get("dvi") is not None:
+        L_ += ["", "Domestic vs International:", _df_txt(dash["dvi"])]
+    return "\n".join(L_)
+
+
+def hotel_facts(fx: dict) -> str:
+    hotels = fx.get("hotels") or []
+    L_ = [f"Periode Inv Date: {fx.get('periode', '-')}",
+          f"Filter pasar: {fx.get('pasar', 'Semua')} · supplier: {fx.get('supplier') or 'Semua'}",
+          "Hotel dipilih: " + ("semua hotel" if not hotels else "; ".join(hotels[:15])), "",
+          "Ringkasan:"] + [f"- {lbl}: {val}" for lbl, val, _c in fx.get("kpi", [])]
+    sup = fx.get("sup")
+    if sup is not None and len(sup):
+        L_ += ["", "Room Night per supplier (semua supplier, sebelum filter supplier):",
+               _df_txt(sup[["name", "rn", "bk"]].rename(
+                   columns={"name": "Supplier", "rn": "Room Night", "bk": "Booking"}), 12)]
+    tr = fx.get("trend")
+    if tr is not None and len(tr):
+        L_ += ["", "Tren Room Night bulanan per supplier:", _df_txt(tr, 24)]
+    t = fx.get("table")
+    if t is not None and len(t):
+        L_ += ["", f"Ringkasan per hotel (total {len(t)} hotel, 15 teratas menurut Revenue):",
+               _df_txt(t, 15)]
+    return "\n".join(L_)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=300)
+def ai_summary(page: str, facts: str, model: str, nonce: int = 0) -> str:
+    import anthropic  # pip install anthropic
+    client = anthropic.Anthropic(api_key=_secret("ANTHROPIC_API_KEY"), timeout=60, max_retries=2)
+    msg = client.messages.create(
+        model=model, max_tokens=700, system=AI_SYSTEM,
+        messages=[{"role": "user", "content": f"Halaman: {page}\n\nData:\n{facts}"}])
+    return "".join(getattr(b, "text", "") for b in msg.content).strip()
+
+
+def ai_card(box, page: str, facts: str, key: str):
+    """Kartu 'Ringkasan AI'. Hasil disimpan per kombinasi data, jadi tidak memanggil ulang
+    Claude selama angka di halaman tidak berubah."""
+    with box.container(border=True, key=f"card_ai_{key}"):
+        h1, h2 = st.columns([5, 1], vertical_alignment="center")
+        section("✨ Ringkasan AI", "dibuat otomatis oleh Claude dari angka di halaman ini · "
+                "cek kembali sebelum dipakai", box=h1)
+        if not _secret("ANTHROPIC_API_KEY"):
+            st.info("Ringkasan AI belum aktif. Tambahkan `ANTHROPIC_API_KEY` di **Streamlit Secrets** "
+                    "(Streamlit Cloud: ⋮ → Settings → Secrets), lalu jalankan ulang aplikasi.")
+            return None
+        model = _secret("ANTHROPIC_MODEL") or AI_MODEL_DEFAULT
+        nk = f"ai_nonce_{key}"
+        if h2.button("↻ Buat ulang", key=f"ai_re_{key}", width="stretch"):
+            st.session_state[nk] = st.session_state.get(nk, 0) + 1
+        nonce = st.session_state.get(nk, 0)
+        sig = hashlib.md5(f"{page}|{model}|{nonce}|{facts}".encode()).hexdigest()
+        store = st.session_state.setdefault("ai_store", {})
+        text = store.get(sig)
+        if text is None:
+            go_ = st.session_state.get("ai_auto", True)
+            if not go_:
+                go_ = st.button("✨ Buat ringkasan", key=f"ai_go_{key}", type="primary")
+            if not go_:
+                st.caption("Ringkasan otomatis sedang dimatikan (sidebar). Klik tombol untuk membuat.")
+                return None
+            with st.spinner("Claude sedang membaca angka di halaman ini…"):
+                try:
+                    text = ai_summary(page, facts, model, nonce)
+                except Exception as e:  # noqa: BLE001
+                    st.warning(f"Ringkasan AI gagal dibuat: {type(e).__name__}: {e}")
+                    return None
+            store[sig] = text
+        st.markdown(text)
+        return text
+
+
 def col_sum(df, c):
     return df[c].sum() if c in df.columns else 0
 
@@ -1429,6 +1558,7 @@ with tab_dash:
         dict(icon="🏨", label="Jumlah Hotel", value=angka(n_hotel), tone="rose",
              sub=f"di {angka(n_city)} kota"),
     ], caption=f"Periode Inv Date: {periode}")
+    ai_box_dash = st.container()  # diisi di akhir tab, setelah semua angka dihitung
     dash["periode"] = periode
     dash["info"] = f"{angka(len(fdata))} baris transaksi"
     dash["kpi"] = [
@@ -1550,7 +1680,9 @@ with tab_dash:
         t[metric] = round_money(t[metric].astype(float))
         bar_col = pct_col if with_avg else "Share %"
         if with_avg:
-            t[avg_col] = t[avg_col].astype(float).round(1)
+            # dibulatkan ke atas (round up) menjadi bilangan bulat, mis. 854,1 -> 855
+            import numpy as np
+            t[avg_col] = np.ceil(t[avg_col].astype(float).fillna(0) - 1e-9).astype("int64")
             t["Booking"] = t["Booking"].fillna(0).astype(int)
             t = t[["Customer", "Booking", avg_col, pct_col]]
             # Top N dipilih dari total Profit, lalu diurutkan dari Avg Profit % tertinggi
@@ -1571,9 +1703,9 @@ with tab_dash:
                     "Booking", format="localized", width="small",
                     help="Jumlah booking = jumlah Invoice No. unik"),
                 avg_col: st.column_config.NumberColumn(
-                    "Avg RN/Bln", format="%.1f", width="small",
+                    "Avg RN/Bln", format="localized", width="small",
                     help=f"Rata-rata Room Night per bulan = total Room Night customer ÷ "
-                         f"{n_months} bulan periode data"),
+                         f"{n_months} bulan periode data, dibulatkan ke atas"),
                 pct_col: st.column_config.ProgressColumn(
                     "Avg Profit %", format="%.2f%%", min_value=0, max_value=vmax, width="small",
                     help="Rata-rata margin per booking: (Profit ÷ Sales AR) tiap Invoice No., "
@@ -1650,6 +1782,8 @@ with tab_dash:
                                  "Booking": st.column_config.NumberColumn(format="localized"),
                                  "Share Revenue %": st.column_config.ProgressColumn(
                                      format="%.1f%%", min_value=0, max_value=100)})
+
+    dash["ai"] = ai_card(ai_box_dash, "Dashboard Penjualan", dash_facts(dash), "dash")
 
     # Tombol ekspor PDF ditaruh di bagian atas dashboard
     with pdf_box:
@@ -1890,6 +2024,7 @@ with tab_find:
                         st.caption(f"Penulisan asli ({len(var)}): " + "; ".join(var[:10])
                                    + (" …" if len(var) > 10 else ""))
 
+        ai_box_find = st.container()  # Ringkasan AI, diisi di akhir tab
         if hd_all.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
@@ -2006,6 +2141,7 @@ with tab_find:
         fx["pasar"] = st.session_state.get("find_market") or "Semua"
         fx["supplier"] = st.session_state.get("find_supplier")
         fx["hotels"] = list(st.session_state.get("find_hotel") or [])
+        fx["ai"] = ai_card(ai_box_find, "Filter per Hotel", hotel_facts(fx), "find")
         with find_pdf_box:
             _p1, _p2 = st.columns([5, 1], vertical_alignment="center")
             _p1.caption("Ringkasan tab ini (sesuai filter & supplier yang dipilih) bisa diunduh "
