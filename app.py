@@ -1211,14 +1211,14 @@ def dashboard_pdf(dash: dict) -> bytes:
         title, sub, t, cap = dash[key]
         sec(0.565, title, sub.split(" · ")[0], x=x0, x_end=x0 + 0.44)
         t = t.copy()
-        t["Customer"] = t["Customer"].map(lambda s: _cut(s, 30))
-        t = t.rename(columns={"Rank": "#", "Avg Booking / Bulan": "Avg/Bulan"})
+        t["Customer"] = t["Customer"].map(lambda s: _cut(s, 26 if len(t.columns) > 4 else 30))
+        t = t.rename(columns={"Rank": "#", "Avg Room Night / Bulan": "Avg RN/Bln"})
         ncol = len(t.columns)
-        cw = {4: [0.06, 0.50, 0.26, 0.18], 5: [0.06, 0.44, 0.15, 0.15, 0.20]}.get(
+        cw = {4: [0.06, 0.50, 0.26, 0.18], 5: [0.06, 0.39, 0.15, 0.20, 0.20]}.get(
             ncol, [1 / ncol] * ncol)
         draw_table([x0, 0.375, 0.44, 0.183], t,
                    {"Sales AR": num, "Booking": num, "Share %": pct, "Avg Profit %": pct,
-                    "Avg/Bulan": dec1}, cw)
+                    "Avg RN/Bln": dec1}, cw)
         import textwrap
         bg.text(x0, 0.365, "\n".join(textwrap.wrap(cap, 95)), fontsize=5.6, color=MUTE, va="top")
 
@@ -1510,8 +1510,8 @@ with tab_dash:
                              name_col: str = "Customer Name"):
         """Tabel Top N Customer berdasarkan metric.
         with_avg=False: kolom Share % = porsi dari total semua customer.
-        with_avg=True : kolom Booking (Invoice No unik), Avg Booking / Bulan (Booking ÷ jumlah
-                        bulan periode) + Avg Profit % = rata-rata margin (Profit ÷ Sales AR)
+        with_avg=True : kolom Booking (Invoice No unik), Avg Room Night / Bulan (total Room Night
+                        ÷ jumlah bulan periode) + Avg Profit % = rata-rata margin (Profit ÷ Sales AR)
                         dari setiap booking customer."""
         if name_col not in fdata.columns or metric not in fdata.columns:
             return
@@ -1524,7 +1524,7 @@ with tab_dash:
                            else pd.Series(d.index.astype(str), index=d.index)))
         agg = d.groupby("_cust")[metric].sum().rename_axis("Customer").to_frame()
         total = agg[metric].sum()
-        avg_col, pct_col = "Avg Booking / Bulan", "Avg Profit %"
+        avg_col, pct_col = "Avg Room Night / Bulan", "Avg Profit %"
         # Jumlah bulan dalam periode data (mengikuti filter tanggal), dihitung inklusif
         n_months = 1
         if "Inv Date" in d.columns and d["Inv Date"].notna().any():
@@ -1537,8 +1537,10 @@ with tab_dash:
             per_c = bk.groupby(level=0).agg(n=("Profit", "size"), pct=("pct", "mean"))
             n_bk = per_c["n"].reindex(agg.index)
             agg["Booking"] = n_bk
-            # rata-rata booking per bulan = jumlah Invoice No. unik ÷ jumlah bulan periode
-            agg[avg_col] = n_bk / n_months
+            # rata-rata Room Night per bulan = total Room Night customer ÷ jumlah bulan periode
+            rn_c = (d.groupby("_cust")["Room Night"].sum() if "Room Night" in d.columns
+                    else pd.Series(0, index=agg.index))
+            agg[avg_col] = rn_c.reindex(agg.index).fillna(0) / n_months
             agg[pct_col] = per_c["pct"].reindex(agg.index)
             all_pct = bk["pct"].mean()
         else:
@@ -1569,8 +1571,8 @@ with tab_dash:
                     "Booking", format="localized", width="small",
                     help="Jumlah booking = jumlah Invoice No. unik"),
                 avg_col: st.column_config.NumberColumn(
-                    "Avg Booking / Bulan", format="%.1f", width="small",
-                    help=f"Rata-rata booking per bulan = jumlah Invoice No. unik ÷ "
+                    "Avg RN/Bln", format="%.1f", width="small",
+                    help=f"Rata-rata Room Night per bulan = total Room Night customer ÷ "
                          f"{n_months} bulan periode data"),
                 pct_col: st.column_config.ProgressColumn(
                     "Avg Profit %", format="%.2f%%", min_value=0, max_value=vmax, width="small",
