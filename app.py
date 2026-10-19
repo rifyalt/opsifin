@@ -1419,12 +1419,36 @@ Aturan:
 - Tanpa judul/heading dan tanpa basa-basi."""
 
 
+def _secret_str(v, name: str = ""):
+    """Ambil nilai teks dari Secrets. Mendukung penulisan biasa maupun di dalam [section],
+    mis.  ANTHROPIC_API_KEY = "sk-..."   atau   [ANTHROPIC_API_KEY] / [anthropic] api_key = "sk-..." """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v.strip().strip('"').strip("'").strip() or None
+    if hasattr(v, "keys"):  # sebuah [section] -> cari nilai teks di dalamnya
+        for k in (name, name.lower(), "api_key", "key", "value", "model"):
+            if k and k in v and isinstance(v[k], str) and v[k].strip():
+                return v[k].strip()
+        for x in v.values():
+            if isinstance(x, str) and x.strip():
+                return x.strip()
+    return None
+
+
 def _secret(name: str):
+    val = None
     try:
-        v = st.secrets.get(name)
-    except Exception:  # noqa: BLE001 - secrets.toml tidak ada
-        v = None
-    return v or os.environ.get(name)
+        val = _secret_str(st.secrets.get(name), name)
+        if not val:  # mungkin ditulis di dalam section lain, mis. [anthropic]
+            for sec in st.secrets.values():
+                if hasattr(sec, "keys") and (name in sec or name.lower() in sec):
+                    val = _secret_str(sec.get(name, sec.get(name.lower())), name)
+                    if val:
+                        break
+    except Exception:  # noqa: BLE001 - secrets.toml tidak ada / format salah
+        val = None
+    return val or (os.environ.get(name) or "").strip() or None
 
 
 def _df_txt(df: pd.DataFrame, max_rows: int = 15) -> str:
