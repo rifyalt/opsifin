@@ -13,6 +13,7 @@ Cara menjalankan:
 import hashlib
 import html
 import io
+import json
 import os
 import re
 from difflib import SequenceMatcher
@@ -1548,6 +1549,301 @@ def ai_card(box, page: str, facts: str, key: str):
         return text
 
 
+# ---------------------------------------------------------------------------
+# "Tanya Claude": tanya jawab bebas tentang data. Claude TIDAK menerima data mentah;
+# Claude memanggil alat `query_data` (filter + group by + agregasi) yang dijalankan oleh
+# aplikasi ini dengan pandas, lalu menjawab berdasarkan hasilnya.
+# ---------------------------------------------------------------------------
+CHAT_MAX_ROWS = 60
+QUERY_TOOL = {
+    "name": "query_data",
+    "description": (
+        "Menjalankan agregasi pada tabel transaksi penjualan hotel (sudah mengikuti filter "
+        "aplikasi). Pakai untuk SETIAP angka yang kamu sebutkan. Alur: filters -> group_by -> "
+        "metrics -> sort -> limit. Tanpa group_by = satu baris total. "
+        "Booking = nunique dari 'Invoice No'. Revenue = sum 'Sales AR'. Room Night = sum "
+        "'Room Night'. Margin % = sum Profit / sum Sales AR * 100 (hitung sendiri dari hasil). "
+        "Untuk tren bulanan group_by 'Bulan' (tanggal awal bulan). Perbandingan teks tidak "
+        "peka huruf besar/kecil; 'contains' cocok untuk sebagian nama."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "filters": {"type": "array", "description": "Syarat baris (AND).", "items": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string"},
+                    "op": {"type": "string", "enum": ["eq", "ne", "in", "not_in", "contains",
+                                                      "not_contains", "gt", "gte", "lt", "lte",
+                                                      "between"]},
+                    "value": {"description": "Nilai; list untuk in/not_in/between. Tanggal: "
+                                             "'YYYY-MM-DD'."}},
+                "required": ["column", "op", "value"]}},
+            "group_by": {"type": "array", "items": {"type": "string"}},
+            "metrics": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "column": {"type": "string"},
+                    "agg": {"type": "string", "enum": ["sum", "mean", "median", "min", "max",
+                                                       "count", "nunique"]},
+                    "as": {"type": "string", "description": "Nama kolom hasil (opsional)."}},
+                "required": ["column", "agg"]}},
+            "sort_by": {"type": "string", "description": "Nama kolom hasil untuk mengurutkan."},
+            "ascending": {"type": "boolean"},
+            "limit": {"type": "integer", "description": f"Maks baris (default 20, maks {CHAT_MAX_ROWS})."},
+        },
+        "required": ["metrics"],
+    },
+}
+
+
+def run_query(df: pd.DataFrame, q: dict) -> pd.DataFrame:
+    """Eksekusi aman (tanpa eval) dari permintaan query_data."""
+    d = df
+    for f in q.get("filters") or []:
+        col, op, val = f.get("column"), f.get("op"), f.get("value")
+        if col not in d.columns:
+            raise ValueError(f"Kolom '{col}' tidak ada.")
+        s = d[col]
+        is_dt = pd.api.types.is_datetime64_any_dtype(s)
+        is_num = pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)
+        vals = val if isinstance(val, list) else [val]
+
+        def conv(x):
+            if is_dt:
+                return pd.to_datetime(x)
+            if is_num:
+                return float(x)
+            return str(x).strip().lower()
+        cv = [conv(x) for x in vals]
+        ss = s if (is_dt or is_num) else s.astype(str).str.strip().str.lower()
+        if op == "eq":
+            m = ss == cv[0]
+        elif op == "ne":
+            m = ss != cv[0]
+        elif op == "in":
+            m = ss.isin(cv)
+        elif op == "not_in":
+            m = ~ss.isin(cv)
+        elif op in ("contains", "not_contains"):
+            pat = "|".join(re.escape(str(x)) for x in cv)
+            m = s.astype(str).str.lower().str.contains(pat, regex=True, na=False)
+            m = ~m if op == "not_contains" else m
+        elif op == "gt":
+            m = ss > cv[0]
+        elif op == "gte":
+            m = ss >= cv[0]
+        elif op == "lt":
+            m = ss < cv[0]
+        elif op == "lte":
+            m = ss <= cv[0]
+        elif op == "between":
+            if len(cv) != 2:
+                raise ValueError("between butuh 2 nilai [awal, akhir].")
+            hi = cv[1] + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) if is_dt else cv[1]
+            m = ss.between(cv[0], hi)
+        else:
+            raise ValueError(f"Operator '{op}' tidak dikenal.")
+        d = d[m.fillna(False)]
+    gb = [g for g in (q.get("group_by") or [])]
+    for g in gb:
+        if g not in d.columns:
+            raise ValueError(f"Kolom group_by '{g}' tidak ada.")
+    aggs = {}
+    for mt in q.get("metrics") or []:
+        col, agg = mt.get("column"), mt.get("agg")
+        if col not in d.columns:
+            raise ValueError(f"Kolom metrik '{col}' tidak ada.")
+        if agg not in ("sum", "mean", "median", "min", "max", "count", "nunique"):
+            raise ValueError(f"Agregasi '{agg}' tidak dikenal.")
+        name = mt.get("as") or f"{agg}({col})"
+        src_col = col
+        if col == "Invoice No":
+            d = d.assign(**{"Invoice No": invoice_key(d["Invoice No"])})
+        aggs[name] = (src_col, "size" if agg == "count" else agg)
+    if not aggs:
+        raise ValueError("Minimal satu metrik.")
+    if gb:
+        res = d.groupby(gb, dropna=False).agg(**aggs).reset_index()
+    else:
+        res = pd.DataFrame({k: [d[c].agg(a) if a != "size" else len(d)] for k, (c, a) in aggs.items()})
+    sb = q.get("sort_by")
+    if sb and sb in res.columns:
+        res = res.sort_values(sb, ascending=bool(q.get("ascending", False)))
+    lim = max(1, min(int(q.get("limit") or 20), CHAT_MAX_ROWS))
+    res.attrs["total_rows"] = len(res)
+    res.attrs["source_rows"] = len(d)
+    return res.head(lim).reset_index(drop=True)
+
+
+def data_schema(df: pd.DataFrame) -> str:
+    """Ringkasan kolom untuk Claude: tipe data, contoh nilai, rentang tanggal."""
+    skip = {"No", "Source File"}
+    L_ = [f"Jumlah baris: {len(df)}"]
+    if "Inv Date" in df.columns and df["Inv Date"].notna().any():
+        L_.append(f"Rentang Inv Date: {df['Inv Date'].min():%Y-%m-%d} s/d {df['Inv Date'].max():%Y-%m-%d}")
+    L_.append("Kolom:")
+    for c in df.columns:
+        if c in skip or str(c).startswith("_"):
+            continue
+        s = df[c]
+        if pd.api.types.is_datetime64_any_dtype(s):
+            L_.append(f"- {c} [tanggal]")
+        elif pd.api.types.is_numeric_dtype(s):
+            L_.append(f"- {c} [angka] total={s.sum():,.0f}")
+        else:
+            vc = s.astype(str).value_counts()
+            top = ", ".join(f"{k}" for k in vc.index[:12])
+            L_.append(f"- {c} [teks, {len(vc)} nilai unik] contoh: {top[:400]}")
+    return "\n".join(L_)
+
+
+CHAT_SYSTEM = """Kamu "Claude", asisten analis data penjualan hotel sebuah travel agent korporat di Indonesia.
+Jawab pertanyaan pengguna HANYA berdasarkan hasil alat query_data (jangan menebak angka).
+Panggil query_data sebanyak yang diperlukan (boleh beberapa kali) sebelum menjawab.
+
+Kolom penting:
+- 'Sales AR' = Revenue (Rp) · 'Profit' (Rp) · 'Room Night' (= Room × Night)
+- Booking = nunique 'Invoice No'
+- 'Customer Name' dan 'Invoice To' = nama customer · 'Supplier Name' · 'Supplier Category'
+  (Wholesaler / OTA / PERTAMINA Corp Rate / Direct To Hotel)
+- 'Hotel (Grup)' = nama hotel yang sudah distandarkan (pakai ini untuk analisis hotel)
+- 'Hotel City' · 'Product Type' (Domestic/International) · 'Inv Date' · 'Bulan' (awal bulan)
+
+Gaya jawaban: Bahasa Indonesia, ringkas dan langsung ke inti. Sebut angka penting dengan format
+Indonesia (Rp 1,25 M; Rp 350 Jt; 1.234 RN). Pakai tabel markdown kecil bila membandingkan beberapa
+item. Jika pertanyaan tidak bisa dijawab dari data, katakan terus terang dan sarankan pertanyaan
+lain. Data yang tersedia sudah mengikuti filter aplikasi (lihat ringkasan di bawah).
+
+Konteks: pertanyaan diajukan dari halaman "{page}". Angka yang sedang tampil di halaman itu
+(boleh dikutip langsung; untuk angka lain pakai query_data):
+{facts}
+
+Ringkasan kolom data yang bisa di-query (sudah mengikuti semua filter halaman ini):
+{schema}"""
+
+
+def ask_claude(question: str, history: list, df: pd.DataFrame, model: str,
+               page: str = "Dashboard", facts: str = "-"):
+    """Loop tool-use: Claude memanggil query_data sampai siap menjawab.
+    Return (jawaban, daftar (query, hasil DataFrame atau pesan error))."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=_secret("ANTHROPIC_API_KEY"), timeout=90, max_retries=2)
+    system = CHAT_SYSTEM.format(schema=data_schema(df), page=page, facts=facts[:6000])
+    msgs = [{"role": m["role"], "content": m["content"]} for m in history[-8:]]
+    msgs.append({"role": "user", "content": question})
+    used = []
+    for _ in range(8):
+        r = client.messages.create(model=model, max_tokens=1800, system=system,
+                                   tools=[QUERY_TOOL], messages=msgs)
+        blocks = []
+        for b in r.content:
+            if b.type == "text":
+                blocks.append({"type": "text", "text": b.text})
+            elif b.type == "tool_use":
+                blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+        msgs.append({"role": "assistant", "content": blocks})
+        calls = [b for b in blocks if b["type"] == "tool_use"]
+        if r.stop_reason != "tool_use" or not calls:
+            text = "".join(b["text"] for b in blocks if b["type"] == "text").strip()
+            return text or "(Claude tidak memberikan jawaban.)", used
+        results = []
+        for c in calls:
+            try:
+                res = run_query(df, c["input"])
+                used.append((c["input"], res))
+                body = (f"{res.attrs.get('total_rows', len(res))} baris hasil "
+                        f"(ditampilkan {len(res)}), dari {res.attrs.get('source_rows')} baris data:\n"
+                        + res.round(2).to_csv(index=False))
+                results.append({"type": "tool_result", "tool_use_id": c["id"], "content": body})
+            except Exception as e:  # noqa: BLE001
+                used.append((c["input"], f"{type(e).__name__}: {e}"))
+                results.append({"type": "tool_result", "tool_use_id": c["id"],
+                                "content": f"Error: {e}", "is_error": True})
+        msgs.append({"role": "user", "content": results})
+    return "Maaf, pertanyaan ini butuh terlalu banyak langkah. Coba persempit pertanyaannya.", used
+
+
+def ask_claude_box(key: str, df: pd.DataFrame, page: str, facts: str, suggestions: list):
+    """Kotak 'Ask Claude' (teks bebas) di bagian bawah sebuah tab. Data yang bisa ditanyakan =
+    `df` (sudah mengikuti semua filter tab tersebut). Riwayat chat terpisah per tab."""
+    with st.container(border=True, key=f"card_ask_{key}"):
+        c1_, c2_ = st.columns([5, 1], vertical_alignment="center")
+        section("💬 Ask Claude", f"tanya apa saja tentang data di halaman ini · "
+                f"{angka(len(df))} baris sesuai filter", box=c1_)
+        hk = f"chat_{key}"
+        if c2_.button("🗑️ Hapus chat", key=f"chat_clear_{key}", width="stretch"):
+            st.session_state[hk] = []
+        if not _secret("ANTHROPIC_API_KEY"):
+            st.info("Ask Claude belum aktif. Tambahkan `ANTHROPIC_API_KEY` di **Streamlit Secrets** "
+                    "(⋮ → Settings → Secrets), lalu jalankan ulang aplikasi.")
+            return
+        chat = st.session_state.setdefault(hk, [])
+        sug_box, msg_box = st.container(), st.container()
+        q_in = st.chat_input("Tulis pertanyaan… (mis. supplier mana yang paling menguntungkan "
+                             "bulan lalu?)", key=f"chat_q_{key}")
+
+        def show_used(used):
+            if not used:
+                return
+            with st.expander(f"🔎 Lihat perhitungan ({len(used)} query)"):
+                for q_, r_ in used:
+                    st.code(json.dumps(q_, ensure_ascii=False, indent=1), language="json")
+                    if isinstance(r_, pd.DataFrame):
+                        st.dataframe(r_, hide_index=True, width="stretch", column_config={
+                            c: st.column_config.NumberColumn(format="localized")
+                            for c in r_.columns if pd.api.types.is_numeric_dtype(r_[c])})
+                    else:
+                        st.warning(r_)
+
+        pending = None
+        if not chat and not q_in:
+            with sug_box:
+                st.caption("Contoh pertanyaan (klik untuk bertanya):")
+                sc = st.columns(2)
+                for i_, s_ in enumerate(suggestions):
+                    if sc[i_ % 2].button(s_, key=f"chat_sug_{key}_{i_}", width="stretch"):
+                        pending = s_
+        question = q_in or pending
+        with msg_box:
+            for m_ in chat:
+                with st.chat_message(m_["role"], avatar="🧑‍💼" if m_["role"] == "user" else "✨"):
+                    st.markdown(m_["content"])
+                    if m_["role"] == "assistant":
+                        show_used(m_.get("used"))
+            if question:
+                with st.chat_message("user", avatar="🧑‍💼"):
+                    st.markdown(question)
+                with st.chat_message("assistant", avatar="✨"):
+                    with st.spinner("Claude sedang menghitung dari data…"):
+                        try:
+                            hist = [{"role": m_["role"], "content": m_["content"]} for m_ in chat]
+                            ans, used = ask_claude(question, hist, df,
+                                                   _secret("ANTHROPIC_MODEL") or AI_MODEL_DEFAULT,
+                                                   page=page, facts=facts)
+                        except Exception as e:  # noqa: BLE001
+                            ans, used = f"⚠️ Gagal menghubungi Claude: {type(e).__name__}: {e}", []
+                    st.markdown(ans)
+                    show_used(used)
+                chat.append({"role": "user", "content": question})
+                chat.append({"role": "assistant", "content": ans, "used": used})
+                if pending:  # sembunyikan contoh pertanyaan setelah dipakai
+                    st.rerun()
+
+
+ASK_SUGGEST_DASH = [
+    "Siapa 5 customer dengan profit terbesar, dan berapa margin masing-masing?",
+    "Bulan apa revenue tertinggi dan terendah? Berapa selisihnya?",
+    "Bandingkan Room Night per kategori supplier per bulan.",
+    "Kota mana dengan revenue terbesar dan hotel apa yang paling berkontribusi?",
+]
+ASK_SUGGEST_HOTEL = [
+    "Supplier mana yang paling banyak menyumbang Room Night di sini?",
+    "Bulan apa Room Night tertinggi dan terendah?",
+    "Customer siapa yang paling sering menginap di hotel-hotel ini?",
+    "Hotel mana dengan rata-rata revenue per room night tertinggi?",
+]
+
+
 def col_sum(df, c):
     return df[c].sum() if c in df.columns else 0
 
@@ -1582,7 +1878,6 @@ with tab_dash:
         dict(icon="🏨", label="Jumlah Hotel", value=angka(n_hotel), tone="rose",
              sub=f"di {angka(n_city)} kota"),
     ], caption=f"Periode Inv Date: {periode}")
-    ai_box_dash = st.container()  # diisi di akhir tab, setelah semua angka dihitung
     dash["periode"] = periode
     dash["info"] = f"{angka(len(fdata))} baris transaksi"
     dash["kpi"] = [
@@ -1807,7 +2102,10 @@ with tab_dash:
                                  "Share Revenue %": st.column_config.ProgressColumn(
                                      format="%.1f%%", min_value=0, max_value=100)})
 
-    dash["ai"] = ai_card(ai_box_dash, "Dashboard Penjualan", dash_facts(dash), "dash")
+    # Ringkasan AI di bagian paling bawah tab (setelah Domestic vs International)
+    _facts_dash = dash_facts(dash)
+    dash["ai"] = ai_card(st, "Dashboard Penjualan", _facts_dash, "dash")
+    ask_claude_box("dash", fdata, "Dashboard", _facts_dash, ASK_SUGGEST_DASH)
 
     # Tombol ekspor PDF ditaruh di bagian atas dashboard
     with pdf_box:
@@ -2048,7 +2346,6 @@ with tab_find:
                         st.caption(f"Penulisan asli ({len(var)}): " + "; ".join(var[:10])
                                    + (" …" if len(var) > 10 else ""))
 
-        ai_box_find = st.container()  # Ringkasan AI, diisi di akhir tab
         if hd_all.empty:
             st.warning("Tidak ada transaksi untuk hotel yang dipilih.")
         else:
@@ -2165,7 +2462,11 @@ with tab_find:
         fx["pasar"] = st.session_state.get("find_market") or "Semua"
         fx["supplier"] = st.session_state.get("find_supplier")
         fx["hotels"] = list(st.session_state.get("find_hotel") or [])
-        fx["ai"] = ai_card(ai_box_find, "Filter per Hotel", hotel_facts(fx), "find")
+        # Ringkasan AI di bagian paling bawah tab (setelah Ringkasan per Hotel)
+        _facts_find = hotel_facts(fx)
+        fx["ai"] = ai_card(st, "Filter per Hotel", _facts_find, "find")
+        # Data yang bisa ditanyakan = hasil filter pasar + hotel + supplier di tab ini
+        ask_claude_box("find", hd, "Filter per Hotel", _facts_find, ASK_SUGGEST_HOTEL)
         with find_pdf_box:
             _p1, _p2 = st.columns([5, 1], vertical_alignment="center")
             _p1.caption("Ringkasan tab ini (sesuai filter & supplier yang dipilih) bisa diunduh "
