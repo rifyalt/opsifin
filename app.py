@@ -1667,38 +1667,84 @@ def ask_claude(question: str, history: list, df: pd.DataFrame, model: str,
     import anthropic
     client = anthropic.Anthropic(api_key=_secret("ANTHROPIC_API_KEY"), timeout=90, max_retries=2)
     system = CHAT_SYSTEM.format(schema=data_schema(df), page=page, facts=facts[:6000])
-    msgs = [{"role": m["role"], "content": m["content"]} for m in history[-8:]]
+    # Riwayat: hanya pesan teks yang tidak kosong, dan harus diawali pesan user
+    msgs = [{"role": m["role"], "content": str(m["content"])} for m in history[-8:]
+            if str(m.get("content", "")).strip()
+            and not str(m["content"]).startswith(("⚠️", "(Claude tidak"))]
+    while msgs and msgs[0]["role"] != "user":
+        msgs.pop(0)
     msgs.append({"role": "user", "content": question})
-    used = []
-    for _ in range(8):
-        r = client.messages.create(model=model, max_tokens=1800, system=system,
-                                   tools=[QUERY_TOOL], messages=msgs)
+    used, earlier_text, last_stop = [], [], None
+    NUDGE = ("Berdasarkan hasil query di atas, tuliskan sekarang jawaban akhir untuk pertanyaan "
+             "saya dalam Bahasa Indonesia (jangan memanggil alat lagi).")
+
+    def add_user_text(text):
+        """Tambahkan teks ke pesan user terakhir (atau buat pesan user baru)."""
+        if msgs and msgs[-1]["role"] == "user":
+            c = msgs[-1]["content"]
+            msgs[-1]["content"] = ([{"type": "text", "text": c}] if isinstance(c, str) else c) + [
+                {"type": "text", "text": text}]
+        else:
+            msgs.append({"role": "user", "content": text})
+
+    for step in range(10):
+        final_try = step >= 8  # langkah terakhir: paksa menjawab tanpa alat
+        kw = {"tool_choice": {"type": "none"}} if final_try else {}
+        r = client.messages.create(model=model, max_tokens=4096, system=system,
+                                   tools=[QUERY_TOOL], messages=msgs, **kw)
+        last_stop = r.stop_reason
         blocks = []
         for b in r.content:
-            if b.type == "text":
+            if b.type == "text" and b.text.strip():
                 blocks.append({"type": "text", "text": b.text})
             elif b.type == "tool_use":
                 blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
-        msgs.append({"role": "assistant", "content": blocks})
+        if r.stop_reason == "pause_turn" and blocks:  # server minta dilanjutkan
+            msgs.append({"role": "assistant", "content": blocks})
+            continue
         calls = [b for b in blocks if b["type"] == "tool_use"]
-        if r.stop_reason != "tool_use" or not calls:
-            text = "".join(b["text"] for b in blocks if b["type"] == "text").strip()
-            return text or "(Claude tidak memberikan jawaban.)", used
-        results = []
-        for c in calls:
-            try:
-                res = run_query(df, c["input"])
-                used.append((c["input"], res))
-                body = (f"{res.attrs.get('total_rows', len(res))} baris hasil "
-                        f"(ditampilkan {len(res)}), dari {res.attrs.get('source_rows')} baris data:\n"
-                        + res.round(2).to_csv(index=False))
-                results.append({"type": "tool_result", "tool_use_id": c["id"], "content": body})
-            except Exception as e:  # noqa: BLE001
-                used.append((c["input"], f"{type(e).__name__}: {e}"))
-                results.append({"type": "tool_result", "tool_use_id": c["id"],
-                                "content": f"Error: {e}", "is_error": True})
-        msgs.append({"role": "user", "content": results})
-    return "Maaf, pertanyaan ini butuh terlalu banyak langkah. Coba persempit pertanyaannya.", used
+        text = "\n\n".join(b["text"] for b in blocks if b["type"] == "text").strip()
+        if calls and r.stop_reason == "tool_use" and not final_try:
+            if text:
+                earlier_text.append(text)
+            msgs.append({"role": "assistant", "content": blocks})
+            results = []
+            for c in calls:
+                try:
+                    res = run_query(df, c["input"])
+                    used.append((c["input"], res))
+                    body = (f"{res.attrs.get('total_rows', len(res))} baris hasil "
+                            f"(ditampilkan {len(res)}), dari {res.attrs.get('source_rows')} baris data:\n"
+                            + res.round(2).to_csv(index=False))
+                    results.append({"type": "tool_result", "tool_use_id": c["id"], "content": body})
+                except Exception as e:  # noqa: BLE001
+                    used.append((c["input"], f"{type(e).__name__}: {e}"))
+                    results.append({"type": "tool_result", "tool_use_id": c["id"],
+                                    "content": f"Error: {e}", "is_error": True})
+            msgs.append({"role": "user", "content": results})
+            continue
+        if text:
+            if r.stop_reason == "max_tokens":
+                text += "\n\n_(jawaban terpotong karena terlalu panjang — coba persempit pertanyaan)_"
+            return text, used
+        # Jawaban kosong: minta Claude menuliskan jawaban akhir (tanpa memanggil alat lagi)
+        if blocks:
+            msgs.append({"role": "assistant", "content": blocks})
+        add_user_text(NUDGE)
+        if step < 8:
+            r2 = client.messages.create(model=model, max_tokens=4096, system=system,
+                                        tools=[QUERY_TOOL], tool_choice={"type": "none"},
+                                        messages=msgs)
+            last_stop = r2.stop_reason
+            t2 = "\n\n".join(b.text for b in r2.content
+                               if b.type == "text" and b.text.strip()).strip()
+            if t2:
+                return t2, used
+        break
+    if earlier_text:
+        return "\n\n".join(earlier_text), used
+    return (f"Maaf, Claude belum memberikan jawaban (status: {last_stop}). Coba ulangi atau "
+            "persempit pertanyaannya."), used
 
 
 def ask_claude_box(key: str, df: pd.DataFrame, page: str, facts: str, suggestions: list):
