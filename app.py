@@ -1007,10 +1007,6 @@ fdata = multi_filter(fdata, "Customer Name", "Customer")
 fdata = multi_filter(fdata, "Supplier Category", "Kategori Supplier")
 fdata = multi_filter(fdata, "Hotel City", "Kota Hotel")
 top_n = st.sidebar.slider("Top N pada grafik", 5, 30, 10)
-st.sidebar.divider()
-st.sidebar.toggle("✨ Ringkasan AI otomatis", value=True, key="ai_auto",
-                  help="Claude membuat narasi singkat di tab Dashboard & Filter per Hotel setiap "
-                       "angka berubah. Matikan untuk membuatnya hanya saat tombol diklik.")
 
 if fdata.empty:
     st.warning("Tidak ada data yang cocok dengan filter.")
@@ -1409,17 +1405,6 @@ def file_download(box, label: str, make, file_name: str, mime: str, key: str, **
 #   (bukan data mentah per transaksi) yang dikirim ke Claude.
 # ---------------------------------------------------------------------------
 AI_MODEL_DEFAULT = "claude-sonnet-5-5"
-AI_SYSTEM = """Kamu analis penjualan hotel di sebuah travel agent korporat di Indonesia.
-Tulis ringkasan eksekutif singkat dalam Bahasa Indonesia dari data ringkas sebuah halaman dashboard.
-Aturan:
-- Gunakan HANYA angka yang ada di data. Jangan mengarang angka, tren, maupun penyebab.
-- Format: satu kalimat pembuka, lalu 3-5 poin (diawali "- ") berisi temuan terpenting lengkap
-  dengan angkanya, lalu satu poin terakhir "- **Perlu diperhatikan:** ..." berisi anomali, risiko
-  konsentrasi, atau saran tindak lanjut yang masuk akal dari data.
-- Maksimal 170 kata. Tulis Rupiah ringkas (mis. Rp 13,75 M; Rp 962 Jt). Pakai format angka Indonesia.
-- Tanpa judul/heading dan tanpa basa-basi."""
-
-
 def _secret_str(v, name: str = ""):
     """Ambil nilai teks dari Secrets. Mendukung penulisan biasa maupun di dalam [section],
     mis.  ANTHROPIC_API_KEY = "sk-..."   atau   [ANTHROPIC_API_KEY] / [anthropic] api_key = "sk-..." """
@@ -1502,55 +1487,8 @@ def hotel_facts(fx: dict) -> str:
     return "\n".join(L_)
 
 
-@st.cache_data(show_spinner=False, ttl=24 * 3600, max_entries=300)
-def ai_summary(page: str, facts: str, model: str, nonce: int = 0) -> str:
-    import anthropic  # pip install anthropic
-    client = anthropic.Anthropic(api_key=_secret("ANTHROPIC_API_KEY"), timeout=60, max_retries=2)
-    msg = client.messages.create(
-        model=model, max_tokens=700, system=AI_SYSTEM,
-        messages=[{"role": "user", "content": f"Halaman: {page}\n\nData:\n{facts}"}])
-    return "".join(getattr(b, "text", "") for b in msg.content).strip()
-
-
-def ai_card(box, page: str, facts: str, key: str):
-    """Kartu 'Ringkasan AI'. Hasil disimpan per kombinasi data, jadi tidak memanggil ulang
-    Claude selama angka di halaman tidak berubah."""
-    with box.container(border=True, key=f"card_ai_{key}"):
-        h1, h2 = st.columns([5, 1], vertical_alignment="center")
-        section("✨ Ringkasan AI", "dibuat otomatis oleh Claude dari angka di halaman ini · "
-                "cek kembali sebelum dipakai", box=h1)
-        if not _secret("ANTHROPIC_API_KEY"):
-            st.info("Ringkasan AI belum aktif. Tambahkan `ANTHROPIC_API_KEY` di **Streamlit Secrets** "
-                    "(Streamlit Cloud: ⋮ → Settings → Secrets), lalu jalankan ulang aplikasi.")
-            return None
-        model = _secret("ANTHROPIC_MODEL") or AI_MODEL_DEFAULT
-        nk = f"ai_nonce_{key}"
-        if h2.button("↻ Buat ulang", key=f"ai_re_{key}", width="stretch"):
-            st.session_state[nk] = st.session_state.get(nk, 0) + 1
-        nonce = st.session_state.get(nk, 0)
-        sig = hashlib.md5(f"{page}|{model}|{nonce}|{facts}".encode()).hexdigest()
-        store = st.session_state.setdefault("ai_store", {})
-        text = store.get(sig)
-        if text is None:
-            go_ = st.session_state.get("ai_auto", True)
-            if not go_:
-                go_ = st.button("✨ Buat ringkasan", key=f"ai_go_{key}", type="primary")
-            if not go_:
-                st.caption("Ringkasan otomatis sedang dimatikan (sidebar). Klik tombol untuk membuat.")
-                return None
-            with st.spinner("Claude sedang membaca angka di halaman ini…"):
-                try:
-                    text = ai_summary(page, facts, model, nonce)
-                except Exception as e:  # noqa: BLE001
-                    st.warning(f"Ringkasan AI gagal dibuat: {type(e).__name__}: {e}")
-                    return None
-            store[sig] = text
-        st.markdown(text)
-        return text
-
-
 # ---------------------------------------------------------------------------
-# "Tanya Claude": tanya jawab bebas tentang data. Claude TIDAK menerima data mentah;
+# "Ask Claude": tanya jawab bebas tentang data. Claude TIDAK menerima data mentah;
 # Claude memanggil alat `query_data` (filter + group by + agregasi) yang dijalankan oleh
 # aplikasi ini dengan pandas, lalu menjawab berdasarkan hasilnya.
 # ---------------------------------------------------------------------------
@@ -1782,19 +1720,6 @@ def ask_claude_box(key: str, df: pd.DataFrame, page: str, facts: str, suggestion
         q_in = st.chat_input("Tulis pertanyaan… (mis. supplier mana yang paling menguntungkan "
                              "bulan lalu?)", key=f"chat_q_{key}")
 
-        def show_used(used):
-            if not used:
-                return
-            with st.expander(f"🔎 Lihat perhitungan ({len(used)} query)"):
-                for q_, r_ in used:
-                    st.code(json.dumps(q_, ensure_ascii=False, indent=1), language="json")
-                    if isinstance(r_, pd.DataFrame):
-                        st.dataframe(r_, hide_index=True, width="stretch", column_config={
-                            c: st.column_config.NumberColumn(format="localized")
-                            for c in r_.columns if pd.api.types.is_numeric_dtype(r_[c])})
-                    else:
-                        st.warning(r_)
-
         pending = None
         if not chat and not q_in:
             with sug_box:
@@ -1808,8 +1733,6 @@ def ask_claude_box(key: str, df: pd.DataFrame, page: str, facts: str, suggestion
             for m_ in chat:
                 with st.chat_message(m_["role"], avatar="🧑‍💼" if m_["role"] == "user" else "✨"):
                     st.markdown(m_["content"])
-                    if m_["role"] == "assistant":
-                        show_used(m_.get("used"))
             if question:
                 with st.chat_message("user", avatar="🧑‍💼"):
                     st.markdown(question)
@@ -1823,7 +1746,6 @@ def ask_claude_box(key: str, df: pd.DataFrame, page: str, facts: str, suggestion
                         except Exception as e:  # noqa: BLE001
                             ans, used = f"⚠️ Gagal menghubungi Claude: {type(e).__name__}: {e}", []
                     st.markdown(ans)
-                    show_used(used)
                 chat.append({"role": "user", "content": question})
                 chat.append({"role": "assistant", "content": ans, "used": used})
                 if pending:  # sembunyikan contoh pertanyaan setelah dipakai
@@ -2102,9 +2024,8 @@ with tab_dash:
                                  "Share Revenue %": st.column_config.ProgressColumn(
                                      format="%.1f%%", min_value=0, max_value=100)})
 
-    # Ringkasan AI di bagian paling bawah tab (setelah Domestic vs International)
+    # Ask Claude di bagian paling bawah tab (setelah Domestic vs International)
     _facts_dash = dash_facts(dash)
-    dash["ai"] = ai_card(st, "Dashboard Penjualan", _facts_dash, "dash")
     ask_claude_box("dash", fdata, "Dashboard", _facts_dash, ASK_SUGGEST_DASH)
 
     # Tombol ekspor PDF ditaruh di bagian atas dashboard
@@ -2462,9 +2383,8 @@ with tab_find:
         fx["pasar"] = st.session_state.get("find_market") or "Semua"
         fx["supplier"] = st.session_state.get("find_supplier")
         fx["hotels"] = list(st.session_state.get("find_hotel") or [])
-        # Ringkasan AI di bagian paling bawah tab (setelah Ringkasan per Hotel)
+        # Ask Claude di bagian paling bawah tab (setelah Ringkasan per Hotel)
         _facts_find = hotel_facts(fx)
-        fx["ai"] = ai_card(st, "Filter per Hotel", _facts_find, "find")
         # Data yang bisa ditanyakan = hasil filter pasar + hotel + supplier di tab ini
         ask_claude_box("find", hd, "Filter per Hotel", _facts_find, ASK_SUGGEST_HOTEL)
         with find_pdf_box:
