@@ -624,6 +624,14 @@ def excel_book(sheets: dict, scorecard: list = None) -> bytes:
                 elif pd.api.types.is_datetime64_any_dtype(s):
                     width = max(len(str(col)) + 2, 13)
                 ws.set_column(j, j, width, fmt)
+            # Baris "TOTAL" (bila ada) dicetak tebal
+            if len(df.columns) and len(df):
+                _tot = df.iloc[:, 0].astype(str).str.upper().eq("TOTAL").to_numpy().nonzero()[0]
+                if len(_tot):
+                    f_tot = wb.add_format({"bold": True, "bg_color": "#F3F8FD", "num_format": "#,##0",
+                                           "top": 1})
+                    for _i in _tot:
+                        ws.set_row(int(_i) + 1, None, f_tot)
             ws.freeze_panes(1, 0)
             if len(df):
                 ws.autofilter(0, 0, len(df), len(df.columns) - 1)
@@ -2335,10 +2343,34 @@ with tab_find:
             # ---------------- Tren bulanan per supplier ----------------
             if "Bulan" in hd.columns:
                 mm = (hd.assign(_inv=inv.values).groupby("Bulan")
-                      .agg(RoomNight=("Room Night", "sum")).reset_index())
+                      .agg(RoomNight=("Room Night", "sum"), Booking=("_inv", "nunique"),
+                           Revenue=("Sales AR", "sum")).reset_index())
                 mm["Label"] = (mm["Bulan"].dt.month.map(lambda x: BULAN[x - 1]) + " "
                                + mm["Bulan"].dt.strftime("%y"))
                 with st.container(border=True, key="card_find_trend"):
+                    # --- Total Room Night per bulan (semua supplier) ---
+                    _h1, _h2 = st.columns([5, 1], vertical_alignment="center")
+                    section("Total Room Night per Bulan",
+                            "semua supplier" + (f" · filter supplier: {sel_sup}" if sel_sup else ""),
+                            box=_h1)
+                    _trend_btn = _h2.empty()  # tombol Excel, diisi setelah tabel supplier dihitung
+                    ft = go.Figure()
+                    ft.add_scatter(x=mm["Label"], y=mm["RoomNight"], name="Total Room Night",
+                                   mode="lines+markers+text", text=[angka(v) for v in mm["RoomNight"]],
+                                   textposition="top center", textfont=dict(size=11, color="#434343"),
+                                   line=dict(color=PALETTE[0], width=3.5, shape="spline", smoothing=0.6),
+                                   marker=dict(size=8), fill="tozeroy",
+                                   fillcolor="rgba(13,127,204,0.08)",
+                                   hovertemplate="Total: %{y:,.0f} RN<extra></extra>")
+                    clean_fig(ft, 260)
+                    _ymax = float(mm["RoomNight"].max() or 1)
+                    ft.update_layout(showlegend=False, hovermode="x unified",
+                                     yaxis=dict(title=None, range=[0, _ymax * 1.22]),
+                                     margin=dict(t=20, b=10, l=30, r=30))
+                    ft.update_traces(cliponaxis=False)
+                    st.plotly_chart(ft, width="stretch", key="find_trend_total",
+                                    config={"displayModeBar": False})
+
                     section("Tren Room Night per Supplier",
                             "klik nama di legenda untuk menyembunyikan / menampilkan garis")
                     fg = go.Figure()
@@ -2365,6 +2397,44 @@ with tab_find:
                                                  title=None, font=dict(size=12)))
                     st.plotly_chart(fg, width="stretch", key="find_trend",
                                     config={"displayModeBar": False})
+
+                    # --- Unduh tabel tren (Excel) ---
+                    def make_trend_xlsx(mm=mm.copy(), sm=(sm.copy() if "Supplier Name" in hd.columns
+                                                         else None),
+                                        order=(list(order) if "Supplier Name" in hd.columns else []),
+                                        sel_h=list(sel_h), sel_sup=sel_sup,
+                                        pasar=st.session_state.get("find_market") or "Semua",
+                                        periode=fx.get("periode", "-")):
+                        tot = pd.DataFrame({
+                            "Bulan": mm["Label"].values,
+                            "Total Room Night": mm["RoomNight"].astype(int).values,
+                            "Booking (Invoice unik)": mm["Booking"].astype(int).values,
+                            "Revenue (Sales AR)": round_money(mm["Revenue"].astype(float)).values,
+                        })
+                        tot.loc[len(tot)] = ["TOTAL", tot["Total Room Night"].sum(),
+                                             int(inv.nunique()),
+                                             round_money(float(mm["Revenue"].sum()))]
+                        sheets = {"Total per Bulan": tot}
+                        if sm is not None and len(order):
+                            piv = sm[order].astype(int).copy()
+                            piv.insert(0, "Bulan", mm["Label"].values)
+                            piv["Total Semua Supplier"] = sm.sum(axis=1).astype(int).values
+                            piv = piv.reset_index(drop=True)
+                            piv.loc[len(piv)] = ["TOTAL"] + [int(piv[c].sum()) for c in piv.columns[1:]]
+                            sheets["Room Night per Supplier"] = piv
+                        card = [("Tren Room Night per Bulan", None, "title"),
+                                ("Filter", None, None),
+                                ("Periode Inv Date", periode, "text"),
+                                ("Pasar", pasar, "text"),
+                                ("Supplier", sel_sup or "Semua", "text"),
+                                ("Hotel", "Semua hotel" if not sel_h else "; ".join(sel_h), "text"),
+                                ("Diunduh", pd.Timestamp.now().strftime("%d %b %Y %H:%M"), "text")]
+                        return excel_book(sheets, scorecard=card)
+
+                    _fn_t = "tren_room_night" + (f"_{re.sub(r'[^A-Za-z0-9]+', '_', sel_sup)}"
+                                                 if sel_sup else "")
+                    excel_download(_trend_btn, "⬇️ Download Excel", make_trend_xlsx,
+                                   f"{_fn_t}.xlsx", "dl_find_trend_xlsx", width="stretch")
 
             # ---------------- Ringkasan per hotel ----------------
             g = hd.assign(_inv=inv.values).groupby(hcol)
