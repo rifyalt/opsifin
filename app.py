@@ -823,10 +823,19 @@ if std_on:
 #   Pola regex (tidak peka huruf besar/kecil) -> penulisan baku. Tambahkan baris
 #   baru di NAME_FIXES bila ada merek lain yang perlu diseragamkan.
 # ---------------------------------------------------------------------------
-NAME_FIXES = {
-    r"m(?:o|ö|oe|ø)venpick": "Mövenpick",   # Movenpick, MOVENPICK, Moevenpick -> Mövenpick
-    r"meli(?:a|á|à|â)": "Meliá",             # Melia, MELIA, Meliá -> Meliá
-}
+def standard_supplier(sr: pd.Series) -> pd.Series:
+    """Supplier Name baku: nama di SUPPLIER_STANDARD_NAMES -> penulisan baku, lainnya Proper.
+    Setelah itu NAME_FIXES diterapkan lagi agar 'éL Hotel', 'Meliá', dll. tidak berubah
+    oleh Proper Case (mis. 'éL Hotel' -> 'él Hotel')."""
+    std = {_compact(k): v for k, v in SUPPLIER_STANDARD_NAMES.items()}
+    mapped = sr.astype(str).map(_compact).map(std)
+    out = mapped.fillna(proper_case(sr))
+    # domain seperti 'Xxx.Com' tetap ditulis '.com'
+    out = out.astype("string").str.replace(r"\.(Com|Co\.Id|Id|Net)\b",
+                                           lambda m: m.group(0).lower(), regex=True)
+    out = fix_names(out.astype(object).where(sr.notna(), sr))
+    return out.astype(object).where(sr.notna(), sr)
+    
 NAME_FIX_COLS = ["Supplier Name", "Hotel Name"]
 
 
