@@ -823,6 +823,39 @@ if std_on:
 #   Pola regex (tidak peka huruf besar/kecil) -> penulisan baku. Tambahkan baris
 #   baru di NAME_FIXES bila ada merek lain yang perlu diseragamkan.
 # ---------------------------------------------------------------------------
+NAME_FIXES = {
+    r"[eé]L\s+Hotel": "éL Hotel",       # 'EL HOTEL', 'El Hotel', 'él hotel' -> 'éL Hotel'
+    r"[eé]L\s+Royale": "éL Royale",     # 'EL ROYALE' -> 'éL Royale'
+    r"Meli[aá]": "Meliá",               # 'MELIA', 'Melia' -> 'Meliá'
+}
+
+NAME_FIX_COLS = ["Supplier Name", "Hotel Name"]
+
+
+def fix_names(sr: pd.Series) -> pd.Series:
+    """Terapkan NAME_FIXES (tidak peka huruf besar/kecil) pada sebuah kolom teks."""
+    out = sr.astype("string")
+    for pat, repl in NAME_FIXES.items():
+        out = out.str.replace(rf"\b{pat}\b", repl, regex=True, flags=re.IGNORECASE)
+    return out.astype(object).where(sr.notna(), sr)
+
+
+# Singkatan yang tetap huruf besar setelah dibuat Proper
+PROPER_KEEP_UPPER = ["PT", "CV", "CBT", "MG", "TBO", "BUMN", "PLN", "PGN", "KAI", "BRI", "BNI", "BCA", "BTN",
+                     "BPJS", "SKK", "LNG", "UD", "TNI", "POLRI", "RI", "II", "III", "IV"]
+
+
+def proper_case(sr: pd.Series) -> pd.Series:
+    """Ubah teks jadi Proper Case ('CBT PERTAMINA' -> 'CBT Pertamina',
+    'pt bank mandiri (persero) tbk' -> 'PT Bank Mandiri (Persero) Tbk').
+    Singkatan di PROPER_KEEP_UPPER tetap huruf besar; nilai kosong tidak diubah."""
+    s_ = sr.astype("string").str.strip().str.replace(r"\s+", " ", regex=True).str.lower()
+    s_ = s_.str.replace(r"(?<![\w'’])([a-z])", lambda m: m.group(1).upper(), regex=True)
+    keep = "|".join(w.capitalize() for w in PROPER_KEEP_UPPER)
+    s_ = s_.str.replace(rf"\b({keep})\b", lambda m: m.group(1).upper(), regex=True)
+    return s_.astype(object).where(sr.notna(), sr)
+
+
 def standard_supplier(sr: pd.Series) -> pd.Series:
     """Supplier Name baku: nama di SUPPLIER_STANDARD_NAMES -> penulisan baku, lainnya Proper.
     Setelah itu NAME_FIXES diterapkan lagi agar 'éL Hotel', 'Meliá', dll. tidak berubah
@@ -834,15 +867,6 @@ def standard_supplier(sr: pd.Series) -> pd.Series:
     out = out.astype("string").str.replace(r"\.(Com|Co\.Id|Id|Net)\b",
                                            lambda m: m.group(0).lower(), regex=True)
     out = fix_names(out.astype(object).where(sr.notna(), sr))
-    return out.astype(object).where(sr.notna(), sr)
-    
-NAME_FIX_COLS = ["Supplier Name", "Hotel Name"]
-
-
-def fix_names(sr: pd.Series) -> pd.Series:
-    out = sr.astype("string")
-    for pat, repl in NAME_FIXES.items():
-        out = out.str.replace(rf"\b{pat}\b", repl, regex=True, flags=re.IGNORECASE)
     return out.astype(object).where(sr.notna(), sr)
 
 
@@ -925,22 +949,6 @@ def customer_norm(sr: pd.Series) -> pd.Series:
     return s_.str.replace(r"\s*\(\s*", "(", regex=True).str.replace(r"\s*\)", ")", regex=True)
 
 
-# Singkatan yang tetap huruf besar setelah dibuat Proper
-PROPER_KEEP_UPPER = ["PT", "CV", "CBT", "MG", "TBO", "BUMN", "PLN", "PGN", "KAI", "BRI", "BNI", "BCA", "BTN",
-                     "BPJS", "SKK", "LNG", "UD", "TNI", "POLRI", "RI", "II", "III", "IV"]
-
-
-def proper_case(sr: pd.Series) -> pd.Series:
-    """Ubah teks jadi Proper Case ('CBT PERTAMINA' -> 'CBT Pertamina',
-    'pt bank mandiri (persero) tbk' -> 'PT Bank Mandiri (Persero) Tbk').
-    Singkatan di PROPER_KEEP_UPPER tetap huruf besar; nilai kosong tidak diubah."""
-    s_ = sr.astype("string").str.strip().str.replace(r"\s+", " ", regex=True).str.lower()
-    s_ = s_.str.replace(r"(?<![\w'’])([a-z])", lambda m: m.group(1).upper(), regex=True)
-    keep = "|".join(w.capitalize() for w in PROPER_KEEP_UPPER)
-    s_ = s_.str.replace(rf"\b({keep})\b", lambda m: m.group(1).upper(), regex=True)
-    return s_.astype(object).where(sr.notna(), sr)
-
-
 # Aturan merge customer diterapkan otomatis (tanpa tampilan di halaman)
 if "Customer Name" in data.columns:
     rule_map = {customer_norm(pd.Series([r["Nama Customer Asli"]]))[0]: r["Digabung Menjadi"]
@@ -971,17 +979,6 @@ if inv_to_col and INVOICE_TO_RULES:
 # ---------------------------------------------------------------------------
 # Kategori Supplier (otomatis dari Supplier Name, tidak peka huruf besar/kecil)
 # ---------------------------------------------------------------------------
-def standard_supplier(sr: pd.Series) -> pd.Series:
-    """Supplier Name baku: nama di SUPPLIER_STANDARD_NAMES -> penulisan baku, lainnya Proper."""
-    std = {_compact(k): v for k, v in SUPPLIER_STANDARD_NAMES.items()}
-    mapped = sr.astype(str).map(_compact).map(std)
-    out = mapped.fillna(proper_case(sr))
-    # domain seperti 'Xxx.Com' tetap ditulis '.com'
-    out = out.astype("string").str.replace(r"\.(Com|Co\.Id|Id|Net)\b",
-                                           lambda m: m.group(0).lower(), regex=True)
-    return out.astype(object).where(sr.notna(), sr)
-
-
 if "Supplier Name" in data.columns:
     data = data.drop(columns=["Supplier Category", "Supplier Name (Asli)"], errors="ignore")
     _sup_orig = data["Supplier Name"]
